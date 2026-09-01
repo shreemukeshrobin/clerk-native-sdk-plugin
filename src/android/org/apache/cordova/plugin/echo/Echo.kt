@@ -8,6 +8,7 @@ import android.util.Log
 import com.clerk.api.Clerk
 import com.clerk.api.ClerkConfigurationOptions
 import com.clerk.api.SharedSessionSyncConfig
+import com.clerk.api.auth.OAuthProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -62,6 +63,10 @@ class Echo : CordovaPlugin() {
                 val identifier = args.optString(0, "")
                 val password = args.optString(1, "")
                 this.signInWithPassword(identifier, password, callbackContext)
+                true
+            }
+            "signInWithMicrosoft" -> {
+                this.signInWithMicrosoft(callbackContext)
                 true
             }
             "signOut" -> {
@@ -466,6 +471,86 @@ class Echo : CordovaPlugin() {
                 Log.e(TAG, "signInWithPassword Exception caught", e)
                 response.put("status", "error")
                 response.put("message", "Exception during sign in: ${e.message}")
+                response.put("error", e.toString())
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
+     * Start Clerk native Microsoft OAuth flow and return the created Clerk session to JavaScript.
+     *
+     * Uses Clerk.auth OAuth APIs and OAuthProvider.MICROSOFT. Does not call Microsoft APIs directly
+     * and does not construct/access tokens manually.
+     */
+    private fun signInWithMicrosoft(callbackContext: CallbackContext) {
+        cordova.threadPool.execute {
+            Log.d(TAG, "signInWithMicrosoft execution started")
+            val response = JSONObject()
+
+            val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
+            if (!isInit) {
+                Log.e(TAG, "signInWithMicrosoft failed: Clerk SDK is not initialized")
+                response.put("status", "error")
+                response.put("message", "Clerk SDK is not initialized. Please call initializeClerk first.")
+                callbackContext.error(response)
+                return@execute
+            }
+
+            try {
+                runBlocking(Dispatchers.IO) {
+                    // Start the Clerk native OAuth flow for Microsoft and wait for the result.
+                    val result = withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                        Clerk.auth.signInWithOAuth(cordova.activity) {
+                            this.provider = OAuthProvider.MICROSOFT
+                        }
+                    }
+
+                    if (result == null) {
+                        Log.e(TAG, "signInWithMicrosoft timed out after ${NETWORK_TIMEOUT_MS}ms")
+                        response.put("status", "error")
+                        response.put("message", "Microsoft OAuth request timed out after ${NETWORK_TIMEOUT_MS / 1000} seconds.")
+                        callbackContext.error(response)
+                        return@runBlocking
+                    }
+
+                    when (result) {
+                        is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                            val signInData = result.value
+                            val sessionId = signInData.createdSessionId
+                            if (!sessionId.isNullOrEmpty()) {
+                                try {
+                                    Clerk.auth.setActive(sessionId = sessionId)
+                                    Log.d(TAG, "Successfully activated session from Microsoft OAuth: $sessionId")
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "Could not set active session after Microsoft OAuth: ${t.message}")
+                                }
+                            }
+
+                            Log.d(TAG, "signInWithMicrosoft SUCCESS: signInId=${signInData.id}, status=${signInData.status.name}")
+                            response.put("status", "success")
+                            response.put("message", "Microsoft sign in successful")
+                            response.put("signInId", signInData.id)
+                            response.put("signInStatus", signInData.status.name)
+                            response.put("createdSessionId", sessionId ?: "")
+                            callbackContext.success(response)
+                        }
+
+                        is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            val (errMessage, errCode) = extractClerkError(result)
+                            Log.e(TAG, "signInWithMicrosoft FAILURE: $errMessage (code: $errCode)")
+                            response.put("status", "error")
+                            response.put("message", errMessage)
+                            response.put("errorCode", errCode)
+                            response.put("error", errMessage)
+                            callbackContext.error(response)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "signInWithMicrosoft Exception caught", e)
+                response.put("status", "error")
+                response.put("message", "Exception during Microsoft sign in: ${e.message}")
                 response.put("error", e.toString())
                 callbackContext.error(response)
             }
