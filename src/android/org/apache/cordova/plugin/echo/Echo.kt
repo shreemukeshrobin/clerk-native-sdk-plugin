@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.HttpURLConnection
 import java.net.URL
+import com.clerk.api.auth.OAuthProvider
 
 /**
  * Echo Cordova Plugin implemented in Kotlin with Clerk Android SDK Integration.
@@ -62,6 +63,10 @@ class Echo : CordovaPlugin() {
                 val identifier = args.optString(0, "")
                 val password = args.optString(1, "")
                 this.signInWithPassword(identifier, password, callbackContext)
+                true
+            }
+            "signInWithMicrosoft" -> {
+                this.signInWithMicrosoft(callbackContext)
                 true
             }
             "signOut" -> {
@@ -469,6 +474,191 @@ class Echo : CordovaPlugin() {
                 response.put("error", e.toString())
                 callbackContext.error(response)
             }
+        }
+    }
+
+        /**
+     * Sign in with Microsoft using Clerk OAuth.
+     *
+     * OAuth is an asynchronous browser/deep-link flow.
+     * Clerk starts the browser authentication and completes the
+     * authentication when the callback URI is delivered back to
+     * the Android application.
+     */
+    private fun signInWithMicrosoft(callbackContext: CallbackContext) {
+        Log.d(TAG, "signInWithMicrosoft called")
+    
+        val response = JSONObject()
+    
+        try {
+            val isInit = try {
+                Clerk.isInitialized.value
+            } catch (t: Throwable) {
+                false
+            }
+    
+            if (!isInit) {
+                Log.e(TAG, "Microsoft sign-in failed: Clerk SDK is not initialized")
+    
+                response.put("status", "error")
+                response.put(
+                    "message",
+                    "Clerk SDK is not initialized. Please call initializeClerk first."
+                )
+    
+                callbackContext.error(response)
+                return
+            }
+    
+            /*
+             * Start the Clerk OAuth flow.
+             *
+             * Do NOT wrap this in:
+             * - runBlocking
+             * - Dispatchers.IO
+             * - cordova.threadPool
+             *
+             * Clerk handles the browser OAuth flow and the Android
+             * callback/deep-link completes the authentication.
+             */
+            cordova.activity.runOnUiThread {
+    
+                try {
+                    Log.d(TAG, "Starting Clerk Microsoft OAuth")
+    
+                    kotlinx.coroutines.MainScope().launch {
+                        try {
+                            val result = Clerk.auth.signInWithOAuth(
+                                OAuthProvider.MICROSOFT
+                            )
+    
+                            when (result) {
+    
+                                is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                                    val signInData = result.value
+    
+                                    Log.d(
+                                        TAG,
+                                        "Microsoft OAuth completed: " +
+                                            "signInId=${signInData.id}, " +
+                                            "status=${signInData.status.name}"
+                                    )
+    
+                                    val sessionId = signInData.createdSessionId
+    
+                                    if (!sessionId.isNullOrEmpty()) {
+                                        try {
+                                            Clerk.auth.setActive(
+                                                sessionId = sessionId
+                                            )
+    
+                                            Log.d(
+                                                TAG,
+                                                "Microsoft session activated: $sessionId"
+                                            )
+    
+                                        } catch (t: Throwable) {
+                                            Log.w(
+                                                TAG,
+                                                "Could not activate Microsoft session: ${t.message}"
+                                            )
+                                        }
+                                    }
+    
+                                    response.put("status", "success")
+                                    response.put(
+                                        "message",
+                                        "Microsoft sign-in successful"
+                                    )
+                                    response.put("provider", "microsoft")
+                                    response.put("signInId", signInData.id)
+                                    response.put(
+                                        "signInStatus",
+                                        signInData.status.name
+                                    )
+                                    response.put(
+                                        "createdSessionId",
+                                        sessionId ?: ""
+                                    )
+    
+                                    callbackContext.success(response)
+                                }
+    
+                                is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                                    val (errorMessage, errorCode) =
+                                        extractClerkError(result)
+    
+                                    Log.e(
+                                        TAG,
+                                        "Microsoft OAuth failed: " +
+                                            "$errorMessage (code=$errorCode)"
+                                    )
+    
+                                    response.put("status", "error")
+                                    response.put("provider", "microsoft")
+                                    response.put("message", errorMessage)
+                                    response.put("errorCode", errorCode)
+                                    response.put("error", errorMessage)
+    
+                                    callbackContext.error(response)
+                                }
+                            }
+    
+                        } catch (e: Throwable) {
+    
+                            Log.e(
+                                TAG,
+                                "Microsoft OAuth exception",
+                                e
+                            )
+    
+                            response.put("status", "error")
+                            response.put("provider", "microsoft")
+                            response.put(
+                                "message",
+                                "Exception during Microsoft sign-in: ${e.message}"
+                            )
+                            response.put("error", e.toString())
+    
+                            callbackContext.error(response)
+                        }
+                    }
+    
+                } catch (e: Throwable) {
+    
+                    Log.e(
+                        TAG,
+                        "Failed to start Microsoft OAuth",
+                        e
+                    )
+    
+                    response.put("status", "error")
+                    response.put(
+                        "message",
+                        "Failed to start Microsoft OAuth: ${e.message}"
+                    )
+                    response.put("error", e.toString())
+    
+                    callbackContext.error(response)
+                }
+            }
+    
+        } catch (e: Throwable) {
+    
+            Log.e(
+                TAG,
+                "Microsoft OAuth setup exception",
+                e
+            )
+    
+            response.put("status", "error")
+            response.put(
+                "message",
+                "Failed to start Microsoft OAuth: ${e.message}"
+            )
+            response.put("error", e.toString())
+    
+            callbackContext.error(response)
         }
     }
 
