@@ -118,6 +118,15 @@ var Echo = {
     },
 
     /**
+     * Start Clerk Microsoft OAuth flow via native Android and return the created Clerk session
+     * @param {function} successCallback - Callback returning JSON object on success
+     * @param {function} errorCallback - Callback returning JSON object on error
+     */
+    signInWithMicrosoft: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'Echo', 'signInWithMicrosoft', []);
+    },
+
+    /**
      * Sign out the active user and clear session via Clerk SDK
      * @param {function} successCallback - Callback returning JSON object on success
      * @param {function} errorCallback - Callback returning JSON object on error
