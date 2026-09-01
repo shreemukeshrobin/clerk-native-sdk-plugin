@@ -24,13 +24,13 @@
             <!-- Enable Kotlin support in Cordova Android / OutSystems MABS -->
             <preference name="GradlePluginKotlinEnabled" value="true" />
             <preference name="GradlePluginKotlinCodeStyle" value="official" />
-            <preference name="GradlePluginKotlinVersion" value="2.0.21" />
+            <preference name="GradlePluginKotlinVersion" value="1.8.22" />
         </config-file>
 
         <config-file target="config.xml" parent="/*">
             <preference name="GradlePluginKotlinEnabled" value="true" />
             <preference name="GradlePluginKotlinCodeStyle" value="official" />
-            <preference name="GradlePluginKotlinVersion" value="2.0.21" />
+            <preference name="GradlePluginKotlinVersion" value="1.8.22" />
         </config-file>
 
         <config-file target="AndroidManifest.xml" parent="/manifest">
@@ -42,7 +42,7 @@
         <framework src="src/android/build-extras.gradle" custom="true" type="gradleReference" />
 
         <!-- Source Files -->
-        <source-file src="src/android/org/apache/cordova/plugin/echo/Echo.kt" target-dir="app/src/main/kotlin/org/apache/cordova/plugin/echo" />
+        <source-file src="src/android/org/apache/cordova/plugin/echo/Echo.kt" target-dir="src/main/kotlin/org/apache/cordova/plugin/echo" />
     </platform>
 
     <!-- iOS Platform -->
