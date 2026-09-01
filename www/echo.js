@@ -17,7 +17,7 @@ var Echo = {
             }
             return;
         }
-        exec(successCallback, errorCallback, 'Echo', 'echo', [phrase]);
+        exec(successCallback, errorCallback, 'Echo', 'echo','signInWithMicrosoft', [phrase]);
     },
 
     /**
@@ -115,6 +115,18 @@ var Echo = {
             return;
         }
         exec(successCallback, errorCallback, 'Echo', 'signInWithPassword', [identifier, password]);
+    },
+ signInWithMicrosoft: function (
+        successCallback,
+        errorCallback
+    ) {
+        exec(
+            successCallback,
+            errorCallback,
+            'Echo',
+            'signInWithMicrosoft',
+            []
+        );
     },
 
     /**
