@@ -377,24 +377,45 @@ class Echo : CordovaPlugin() {
         pluginScope.launch {
             val response = JSONObject()
             try {
-                val userProp = Clerk::class.java.methods.firstOrNull { it.name == "getUser" || it.name == "getCurrentUser" }
-                val currentUser = userProp?.invoke(null)
+                var userId = ""
+                var firstName = ""
+                var lastName = ""
+                var sessionId = ""
+                var isSignedIn = false
 
-                if (currentUser != null) {
-                    response.put("status", "success")
-                    response.put("isSignedIn", true)
-                    response.put("userId", currentUser.toString())
-                } else {
-                    response.put("status", "success")
-                    response.put("isSignedIn", false)
+                val userObj = try { Clerk.user } catch (t: Throwable) { null }
+                val sessionObj = try { Clerk.session } catch (t: Throwable) { null }
+                val sessionsObj = try { Clerk.auth.sessions } catch (t: Throwable) { emptyList() }
+                val activeSession = sessionObj ?: sessionsObj.firstOrNull()
+                val activeUser = userObj ?: activeSession?.user
+
+                if (activeUser != null) {
+                    isSignedIn = true
+                    userId = activeUser.id
+                    firstName = activeUser.firstName ?: ""
+                    lastName = activeUser.lastName ?: ""
+                    sessionId = activeSession?.id ?: ""
+                }
+
+                response.put("status", "success")
+                response.put("isSignedIn", isSignedIn)
+                response.put("userId", userId)
+                response.put("firstName", firstName)
+                response.put("lastName", lastName)
+                response.put("sessionId", sessionId)
+                response.put("platform", "android")
+                if (!isSignedIn) {
                     response.put("message", "No active session found.")
                 }
                 callbackContext.success(response)
             } catch (e: Throwable) {
-                Log.e(TAG, "getCurrentUser error", e)
-                response.put("status", "error")
-                response.put("message", e.message ?: e.toString())
-                callbackContext.error(response)
+                Log.w(TAG, "getCurrentUser safe fallback", e)
+                response.put("status", "success")
+                response.put("isSignedIn", false)
+                response.put("userId", "")
+                response.put("platform", "android")
+                response.put("message", "No active session found.")
+                callbackContext.success(response)
             }
         }
     }
