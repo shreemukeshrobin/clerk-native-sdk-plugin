@@ -467,6 +467,114 @@ class Echo : CordovaPlugin() {
         }
     }
 
+    private fun getOrFetchDevBrowserJwt(host: String, pk: String, forceRefresh: Boolean = false): String {
+        val prefs = cordova.activity.applicationContext.getSharedPreferences("clerk_prefs", android.content.Context.MODE_PRIVATE)
+        if (!forceRefresh) {
+            val jwt = prefs.getString("clerk_dev_browser_jwt", "") ?: ""
+            if (jwt.isNotEmpty()) return jwt
+        }
+
+        var freshJwt = ""
+        try {
+            val url = URL("https://$host/v1/client?_is_native=true&_clerk_js_version=5.0.0")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            if (pk.isNotEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer $pk")
+            }
+            conn.connectTimeout = 7000
+            conn.readTimeout = 7000
+            conn.connect()
+
+            val headerJwt = conn.getHeaderField("Clerk-Db-Jwt") ?: conn.getHeaderField("clerk-db-jwt") ?: ""
+            if (headerJwt.isNotEmpty()) {
+                freshJwt = headerJwt
+            } else {
+                val setCookie = conn.getHeaderField("Set-Cookie") ?: ""
+                if (setCookie.contains("__clerk_db_jwt=")) {
+                    freshJwt = setCookie.substringAfter("__clerk_db_jwt=").substringBefore(";")
+                }
+            }
+            conn.disconnect()
+
+            if (freshJwt.isNotEmpty()) {
+                prefs.edit().putString("clerk_dev_browser_jwt", freshJwt).apply()
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not fetch dev browser token from Clerk: ${t.message}")
+        }
+        return freshJwt
+    }
+
+    private fun queryClerkOAuth(host: String, pk: String, callbackUrl: String, isRetry: Boolean = false): Pair<String, String> {
+        var targetUrl = ""
+        var clerkErrorMessage = ""
+
+        try {
+            val dbJwt = getOrFetchDevBrowserJwt(host, pk, forceRefresh = isRetry)
+            val queryUrl = if (dbJwt.isNotEmpty()) {
+                "https://$host/v1/client/sign_ins?_is_native=true&_clerk_js_version=5.0.0&_clerk_db_jwt=${URLEncoder.encode(dbJwt, "UTF-8")}"
+            } else {
+                "https://$host/v1/client/sign_ins?_is_native=true&_clerk_js_version=5.0.0"
+            }
+
+            val url = URL(queryUrl)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            if (pk.isNotEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer $pk")
+            }
+            if (dbJwt.isNotEmpty()) {
+                conn.setRequestProperty("Clerk-Db-Jwt", dbJwt)
+            }
+            conn.doOutput = true
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val body = "strategy=oauth_microsoft&_is_native=true&redirect_url=" + URLEncoder.encode(callbackUrl, "UTF-8")
+            conn.outputStream.use { os ->
+                os.write(body.toByteArray(Charsets.UTF_8))
+            }
+
+            val newJwt = conn.getHeaderField("Clerk-Db-Jwt") ?: conn.getHeaderField("clerk-db-jwt") ?: ""
+            if (newJwt.isNotEmpty()) {
+                val prefs = cordova.activity.applicationContext.getSharedPreferences("clerk_prefs", android.content.Context.MODE_PRIVATE)
+                prefs.edit().putString("clerk_dev_browser_jwt", newJwt).apply()
+            }
+
+            val respCode = conn.responseCode
+            val stream = if (respCode in 200..399) conn.inputStream else conn.errorStream
+            val respText = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            conn.disconnect()
+
+            if (respText.isNotEmpty()) {
+                val json = JSONObject(respText)
+                val errorsArr = json.optJSONArray("errors")
+                var errCode = ""
+                if (errorsArr != null && errorsArr.length() > 0) {
+                    val firstErr = errorsArr.getJSONObject(0)
+                    clerkErrorMessage = firstErr.optString("long_message", firstErr.optString("message", ""))
+                    errCode = firstErr.optString("code", "")
+                }
+
+                if (errCode == "dev_browser_unauthenticated" && !isRetry) {
+                    Log.d(TAG, "dev_browser_unauthenticated detected, refreshing token and retrying...")
+                    return queryClerkOAuth(host, pk, callbackUrl, isRetry = true)
+                }
+
+                val respObj = json.optJSONObject("response")
+                val verificationObj = respObj?.optJSONObject("first_factor_verification")
+                targetUrl = verificationObj?.optString("external_verification_redirect_url", "") ?: ""
+            }
+        } catch (netEx: Throwable) {
+            Log.w(TAG, "Exception contacting Clerk OAuth endpoint: ${netEx.message}")
+        }
+
+        return Pair(targetUrl, clerkErrorMessage)
+    }
+
     private fun signInWithMicrosoft(publishableKeyParam: String?, callbackContext: CallbackContext) {
         pluginScope.launch {
             val response = JSONObject()
@@ -482,47 +590,7 @@ class Echo : CordovaPlugin() {
                 val host = getFrontendApiHost(pk) ?: "clerk.accounts.dev"
                 val callbackUrl = "https://$host/v1/client/sign_ins/callback"
 
-                var targetUrl = ""
-                var clerkErrorMessage = ""
-
-                // Query Clerk Frontend API to get direct Microsoft authorization redirect URL
-                try {
-                    val url = URL("https://$host/v1/client/sign_ins?_is_native=true&_clerk_js_version=5.0.0")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                    if (pk.isNotEmpty()) {
-                        conn.setRequestProperty("Authorization", "Bearer $pk")
-                    }
-                    conn.doOutput = true
-                    conn.connectTimeout = 10000
-                    conn.readTimeout = 10000
-
-                    val body = "strategy=oauth_microsoft&_is_native=true&redirect_url=" + URLEncoder.encode(callbackUrl, "UTF-8")
-                    conn.outputStream.use { os ->
-                        os.write(body.toByteArray(Charsets.UTF_8))
-                    }
-
-                    val respCode = conn.responseCode
-                    val stream = if (respCode in 200..399) conn.inputStream else conn.errorStream
-                    val respText = stream?.bufferedReader()?.use { it.readText() } ?: ""
-                    conn.disconnect()
-
-                    if (respText.isNotEmpty()) {
-                        val json = JSONObject(respText)
-                        val errorsArr = json.optJSONArray("errors")
-                        if (errorsArr != null && errorsArr.length() > 0) {
-                            val firstErr = errorsArr.getJSONObject(0)
-                            clerkErrorMessage = firstErr.optString("long_message", firstErr.optString("message", ""))
-                        }
-
-                        val respObj = json.optJSONObject("response")
-                        val verificationObj = respObj?.optJSONObject("first_factor_verification")
-                        targetUrl = verificationObj?.optString("external_verification_redirect_url", "") ?: ""
-                    }
-                } catch (netEx: Throwable) {
-                    Log.w(TAG, "Exception contacting Clerk OAuth endpoint: ${netEx.message}")
-                }
+                val (targetUrl, clerkErrorMessage) = queryClerkOAuth(host, pk, callbackUrl)
 
                 if (clerkErrorMessage.isNotEmpty()) {
                     Log.e(TAG, "Clerk OAuth error: $clerkErrorMessage")

@@ -438,7 +438,18 @@ class EchoPlugin : CDVPlugin {
             let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
             let callbackUrl = "https://\(host)/v1/client/sign_ins/callback"
 
-            guard let url = URL(string: "https://\(host)/v1/client/sign_ins?_is_native=true&_clerk_js_version=5.0.0") else {
+            var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins")
+            var queryItems = [
+                URLQueryItem(name: "_is_native", value: "true"),
+                URLQueryItem(name: "_clerk_js_version", value: "5.0.0")
+            ]
+            let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+            if !dbJwt.isEmpty {
+                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
+            }
+            urlComponents?.queryItems = queryItems
+
+            guard let url = urlComponents?.url else {
                 let errResp: [String: Any] = ["status": "error", "message": "Invalid Clerk API host", "platform": "ios"]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
                 return
@@ -449,6 +460,9 @@ class EchoPlugin : CDVPlugin {
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            }
+            if !dbJwt.isEmpty {
+                request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
             let encodedCallback = callbackUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? callbackUrl
             request.httpBody = "strategy=oauth_microsoft&_is_native=true&redirect_url=\(encodedCallback)".data(using: .utf8)
