@@ -487,7 +487,7 @@ class Echo : CordovaPlugin() {
 
                 // Query Clerk Frontend API to get direct Microsoft authorization redirect URL
                 try {
-                    val url = URL("https://$host/v1/client/sign_ins?_clerk_js_version=5.0.0")
+                    val url = URL("https://$host/v1/client/sign_ins?_is_native=true&_clerk_js_version=5.0.0")
                     val conn = url.openConnection() as HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
@@ -498,7 +498,7 @@ class Echo : CordovaPlugin() {
                     conn.connectTimeout = 10000
                     conn.readTimeout = 10000
 
-                    val body = "strategy=oauth_microsoft&redirect_url=" + URLEncoder.encode(callbackUrl, "UTF-8")
+                    val body = "strategy=oauth_microsoft&_is_native=true&redirect_url=" + URLEncoder.encode(callbackUrl, "UTF-8")
                     conn.outputStream.use { os ->
                         os.write(body.toByteArray(Charsets.UTF_8))
                     }
