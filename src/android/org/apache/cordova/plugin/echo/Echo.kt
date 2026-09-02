@@ -334,39 +334,31 @@ class Echo : CordovaPlugin() {
                                 Log.w(TAG, "Failed to set active session: ${t.message}")
                             }
                         }
+
                         val user = try { Clerk.user } catch (t: Throwable) { null }
-                        val activeUser = user ?: signIn.userData
+                        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
+                        val effectiveUser = user ?: activeSession?.user
+
                         response.put("status", "success")
                         response.put("message", "Sign in successful")
+                        response.put("signInId", signIn.id)
                         response.put("signInStatus", try { signIn.status.name } catch (t: Throwable) { "COMPLETE" })
                         response.put("createdSessionId", sessionId ?: "")
-                        response.put("userId", activeUser?.id ?: "")
-                        response.put("firstName", activeUser?.firstName ?: "")
-                        response.put("lastName", activeUser?.lastName ?: "")
+                        response.put("userId", effectiveUser?.id ?: "")
+                        response.put("firstName", effectiveUser?.firstName ?: "")
+                        response.put("lastName", effectiveUser?.lastName ?: "")
                         response.put("identifier", id)
                         response.put("platform", "android")
                         callbackContext.success(response)
                     }
 
                     is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                        val errObj = result.error
-                        val errMsg = try {
-                            errObj.errors.firstOrNull()?.longMessage
-                                ?: errObj.errors.firstOrNull()?.message
-                                ?: errObj.message
-                                ?: "Authentication failed"
-                        } catch (t: Throwable) {
-                            errObj.toString()
-                        }
-                        val errCode = try {
-                            errObj.errors.firstOrNull()?.code ?: "auth_failed"
-                        } catch (t: Throwable) {
-                            "auth_failed"
-                        }
+                        val (errMessage, errCode) = extractClerkError(result)
+                        Log.e(TAG, "signInWithPassword FAILURE: $errMessage (code: $errCode)")
                         response.put("status", "error")
-                        response.put("message", errMsg)
+                        response.put("message", errMessage)
                         response.put("errorCode", errCode)
-                        response.put("error", errMsg)
+                        response.put("error", errMessage)
                         response.put("platform", "android")
                         callbackContext.error(response)
                     }
@@ -378,6 +370,54 @@ class Echo : CordovaPlugin() {
                 callbackContext.error(response)
             }
         }
+    }
+
+    /**
+     * Safely extract human-readable error messages from ClerkResult.Failure.
+     */
+    private fun extractClerkError(failure: com.clerk.api.network.serialization.ClerkResult.Failure<*>): Pair<String, String> {
+        var errorMessage = ""
+        var errorCode = ""
+        val errorObj = failure.error
+        val throwable = failure.throwable
+
+        if (errorObj != null) {
+            try {
+                val errorsField = errorObj.javaClass.getDeclaredField("errors")
+                errorsField.isAccessible = true
+                val errorsList = errorsField.get(errorObj) as? List<*>
+                if (!errorsList.isNullOrEmpty()) {
+                    val firstErr = errorsList.first()
+                    if (firstErr != null) {
+                        val longMsgField = try { firstErr.javaClass.getDeclaredField("longMessage") } catch (t: Throwable) { null }
+                        val msgField = try { firstErr.javaClass.getDeclaredField("message") } catch (t: Throwable) { null }
+                        val codeField = try { firstErr.javaClass.getDeclaredField("code") } catch (t: Throwable) { null }
+                        longMsgField?.isAccessible = true
+                        msgField?.isAccessible = true
+                        codeField?.isAccessible = true
+
+                        errorMessage = (longMsgField?.get(firstErr) as? String)
+                            ?: (msgField?.get(firstErr) as? String)
+                            ?: ""
+                        errorCode = (codeField?.get(firstErr) as? String) ?: ""
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "extractClerkError: could not read errors field", t)
+            }
+        }
+
+        if (errorMessage.isEmpty() && throwable != null) {
+            errorMessage = throwable.message ?: throwable.toString()
+        }
+        if (errorMessage.isEmpty()) {
+            errorMessage = "Authentication failed. Please verify your credentials."
+        }
+        if (errorCode.isEmpty()) {
+            errorCode = "auth_failed"
+        }
+
+        return Pair(errorMessage, errorCode)
     }
 
     private fun signInWithMicrosoft(callbackContext: CallbackContext) {
