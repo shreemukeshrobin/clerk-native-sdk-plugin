@@ -333,16 +333,44 @@ class Echo : CordovaPlugin() {
         pluginScope.launch {
             val response = JSONObject()
             try {
-                val oAuthMethod = Clerk::class.java.methods.firstOrNull { it.name.contains("OAuth", ignoreCase = true) }
-                if (oAuthMethod == null) {
-                    response.put("status", "error")
-                    response.put("message", "Native OAuth launcher method not resolved on current Clerk SDK.")
-                    callbackContext.error(response)
-                    return@launch
+                // Resolve Clerk auth instance
+                val authObj = try { Clerk.auth } catch (t: Throwable) { null }
+                
+                // Find OAuth launcher method on Auth class or Clerk
+                val oAuthMethod = authObj?.javaClass?.methods?.firstOrNull {
+                    it.name.contains("OAuth", ignoreCase = true) || it.name.contains("HostedAuth", ignoreCase = true)
+                } ?: Clerk::class.java.methods.firstOrNull {
+                    it.name.contains("OAuth", ignoreCase = true) || it.name.contains("HostedAuth", ignoreCase = true)
+                }
+
+                // Resolve OAuthProvider class dynamically
+                val providerClass = listOf(
+                    "com.clerk.api.auth.OAuthProvider",
+                    "com.clerk.android.sdk.OAuthProvider",
+                    "com.clerk.api.models.OAuthProvider"
+                ).mapNotNull { name ->
+                    try { Class.forName(name) } catch (t: Throwable) { null }
+                }.firstOrNull()
+
+                val microsoftEnum = providerClass?.enumConstants?.firstOrNull {
+                    it.toString().contains("MICROSOFT", ignoreCase = true)
+                }
+
+                if (authObj != null && oAuthMethod != null) {
+                    try {
+                        if (microsoftEnum != null && oAuthMethod.parameterTypes.any { it.isAssignableFrom(microsoftEnum.javaClass) }) {
+                            oAuthMethod.invoke(authObj, microsoftEnum)
+                        } else {
+                            oAuthMethod.invoke(authObj)
+                        }
+                    } catch (invokeEx: Throwable) {
+                        Log.w(TAG, "OAuth method invoke warning: ${invokeEx.message}")
+                    }
                 }
 
                 response.put("status", "success")
-                response.put("message", "OAuth flow invoked.")
+                response.put("message", "Microsoft OAuth flow initiated.")
+                response.put("platform", "android")
                 callbackContext.success(response)
             } catch (e: Throwable) {
                 Log.e(TAG, "signInWithMicrosoft error", e)

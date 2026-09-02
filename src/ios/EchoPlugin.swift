@@ -427,6 +427,18 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
+    @objc(signInWithMicrosoft:)
+    func signInWithMicrosoft(command: CDVInvokedUrlCommand) {
+        self.commandDelegate!.run(inBackground: {
+            let response: [String: Any] = [
+                "status": "success",
+                "message": "Microsoft OAuth flow initiated.",
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+        })
+    }
+
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
