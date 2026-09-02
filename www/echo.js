@@ -75,8 +75,17 @@ var Echo = {
         exec(successCallback, errorCallback, 'Echo', 'signInWithPassword', [identifier, password]);
     },
 
-    signInWithMicrosoft: function (successCallback, errorCallback) {
-        exec(successCallback, errorCallback, 'Echo', 'signInWithMicrosoft', []);
+    signInWithMicrosoft: function (publishableKeyOrSuccess, successCallback, errorCallback) {
+        var pk = "";
+        var success = successCallback;
+        var error = errorCallback;
+        if (typeof publishableKeyOrSuccess === 'string') {
+            pk = publishableKeyOrSuccess;
+        } else if (typeof publishableKeyOrSuccess === 'function') {
+            success = publishableKeyOrSuccess;
+            error = successCallback;
+        }
+        exec(success, error, 'Echo', 'signInWithMicrosoft', [pk]);
     },
 
     signOut: function (successCallback, errorCallback) {

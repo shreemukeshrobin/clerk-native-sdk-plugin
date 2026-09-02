@@ -430,9 +430,69 @@ class EchoPlugin : CDVPlugin {
     @objc(signInWithMicrosoft:)
     func signInWithMicrosoft(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
+            let pkArg = command.arguments.first as? String ?? ""
+            let pk = !pkArg.isEmpty ? pkArg : (self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey)
+            let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
+            let callbackUrl = "https://\(host)/v1/client/sign_ins/callback"
+
+            guard let url = URL(string: "https://\(host)/v1/client/sign_ins?_clerk_js_version=5.0.0") else {
+                let errResp: [String: Any] = ["status": "error", "message": "Invalid Clerk API host", "platform": "ios"]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            if !pk.isEmpty {
+                request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            }
+            let encodedCallback = callbackUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? callbackUrl
+            request.httpBody = "strategy=oauth_microsoft&redirect_url=\(encodedCallback)".data(using: .utf8)
+
+            let sem = DispatchSemaphore(value: 0)
+            var targetUrl = ""
+            var clerkError = ""
+
+            URLSession.shared.dataTask(with: request) { data, _, _ in
+                if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let errors = json["errors"] as? [[String: Any]], let firstErr = errors.first {
+                        clerkError = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "")
+                    }
+                    if let resp = json["response"] as? [String: Any], let verification = resp["first_factor_verification"] as? [String: Any],
+                       let extUrl = verification["external_verification_redirect_url"] as? String {
+                        targetUrl = extUrl
+                    }
+                }
+                sem.signal()
+            }.resume()
+            _ = sem.wait(timeout: .now() + 10.0)
+
+            if !clerkError.isEmpty {
+                let errResp: [String: Any] = ["status": "error", "message": clerkError, "error": clerkError, "platform": "ios"]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            guard !targetUrl.isEmpty, let openUrl = URL(string: targetUrl) else {
+                let errResp: [String: Any] = [
+                    "status": "error",
+                    "message": "Could not retrieve Microsoft OAuth authorization URL from Clerk. Please ensure Microsoft is enabled under Social / SSO Connections in your Clerk Dashboard.",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            DispatchQueue.main.async {
+                UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
+            }
+
             let response: [String: Any] = [
                 "status": "success",
-                "message": "Microsoft OAuth flow initiated.",
+                "message": "Microsoft OAuth browser opened.",
+                "url": targetUrl,
+                "requiresRedirect": true,
                 "platform": "ios"
             ]
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)

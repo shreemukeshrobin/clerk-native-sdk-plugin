@@ -16,6 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 /**
  * Echo Cordova Plugin implemented in Kotlin with Clerk Android SDK Integration.
@@ -29,6 +30,30 @@ class Echo : CordovaPlugin() {
 
     private val pluginScope = CoroutineScope(Dispatchers.IO)
     private var inMemoryPublishableKey: String = ""
+
+    private fun getStoredPublishableKey(): String {
+        if (inMemoryPublishableKey.isNotEmpty()) return inMemoryPublishableKey
+        return try {
+            val prefs = cordova.activity.applicationContext.getSharedPreferences("clerk_prefs", android.content.Context.MODE_PRIVATE)
+            val saved = prefs.getString("clerk_publishable_key", "") ?: ""
+            if (saved.isNotEmpty()) inMemoryPublishableKey = saved
+            inMemoryPublishableKey
+        } catch (t: Throwable) {
+            ""
+        }
+    }
+
+    private fun saveStoredPublishableKey(key: String) {
+        if (key.isNotEmpty()) {
+            inMemoryPublishableKey = key
+            try {
+                val prefs = cordova.activity.applicationContext.getSharedPreferences("clerk_prefs", android.content.Context.MODE_PRIVATE)
+                prefs.edit().putString("clerk_publishable_key", key).apply()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not persist publishable key in SharedPreferences", t)
+            }
+        }
+    }
 
     override fun execute(
         action: String,
@@ -71,7 +96,8 @@ class Echo : CordovaPlugin() {
                 true
             }
             "signInWithMicrosoft" -> {
-                this.signInWithMicrosoft(callbackContext)
+                val publishableKey = args.optString(0, "")
+                this.signInWithMicrosoft(publishableKey, callbackContext)
                 true
             }
             "signOut" -> {
@@ -441,17 +467,27 @@ class Echo : CordovaPlugin() {
         }
     }
 
-    private fun signInWithMicrosoft(callbackContext: CallbackContext) {
+    private fun signInWithMicrosoft(publishableKeyParam: String?, callbackContext: CallbackContext) {
         pluginScope.launch {
             val response = JSONObject()
             try {
-                val pk = inMemoryPublishableKey
+                var pk = (publishableKeyParam ?: "").trim()
+                if (pk.isEmpty()) {
+                    pk = getStoredPublishableKey()
+                }
+                if (pk.isNotEmpty()) {
+                    saveStoredPublishableKey(pk)
+                }
+
                 val host = getFrontendApiHost(pk) ?: "clerk.accounts.dev"
-                var targetUrl = "https://$host/sign-in"
+                val callbackUrl = "https://$host/v1/client/sign_ins/callback"
+
+                var targetUrl = ""
+                var clerkErrorMessage = ""
 
                 // Query Clerk Frontend API to get direct Microsoft authorization redirect URL
                 try {
-                    val url = URL("https://$host/v1/client/sign_ins")
+                    val url = URL("https://$host/v1/client/sign_ins?_clerk_js_version=5.0.0")
                     val conn = url.openConnection() as HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
@@ -459,10 +495,10 @@ class Echo : CordovaPlugin() {
                         conn.setRequestProperty("Authorization", "Bearer $pk")
                     }
                     conn.doOutput = true
-                    conn.connectTimeout = 7000
-                    conn.readTimeout = 7000
+                    conn.connectTimeout = 10000
+                    conn.readTimeout = 10000
 
-                    val body = "strategy=oauth_microsoft"
+                    val body = "strategy=oauth_microsoft&redirect_url=" + URLEncoder.encode(callbackUrl, "UTF-8")
                     conn.outputStream.use { os ->
                         os.write(body.toByteArray(Charsets.UTF_8))
                     }
@@ -474,18 +510,39 @@ class Echo : CordovaPlugin() {
 
                     if (respText.isNotEmpty()) {
                         val json = JSONObject(respText)
+                        val errorsArr = json.optJSONArray("errors")
+                        if (errorsArr != null && errorsArr.length() > 0) {
+                            val firstErr = errorsArr.getJSONObject(0)
+                            clerkErrorMessage = firstErr.optString("long_message", firstErr.optString("message", ""))
+                        }
+
                         val respObj = json.optJSONObject("response")
                         val verificationObj = respObj?.optJSONObject("first_factor_verification")
-                        val extUrl = verificationObj?.optString("external_verification_redirect_url", "") ?: ""
-                        if (extUrl.isNotEmpty()) {
-                            targetUrl = extUrl
-                        }
+                        targetUrl = verificationObj?.optString("external_verification_redirect_url", "") ?: ""
                     }
                 } catch (netEx: Throwable) {
-                    Log.w(TAG, "Could not obtain dynamic OAuth URL from Clerk, using hosted sign-in fallback: ${netEx.message}")
+                    Log.w(TAG, "Exception contacting Clerk OAuth endpoint: ${netEx.message}")
                 }
 
-                // Launch external browser / Custom Tab for user authentication
+                if (clerkErrorMessage.isNotEmpty()) {
+                    Log.e(TAG, "Clerk OAuth error: $clerkErrorMessage")
+                    response.put("status", "error")
+                    response.put("message", clerkErrorMessage)
+                    response.put("error", clerkErrorMessage)
+                    response.put("platform", "android")
+                    callbackContext.error(response)
+                    return@launch
+                }
+
+                if (targetUrl.isEmpty()) {
+                    response.put("status", "error")
+                    response.put("message", "Could not retrieve Microsoft OAuth authorization URL from Clerk. Please ensure Microsoft is enabled under Social / SSO Connections in your Clerk Dashboard.")
+                    response.put("platform", "android")
+                    callbackContext.error(response)
+                    return@launch
+                }
+
+                Log.d(TAG, "Launching Microsoft OAuth authorization page: $targetUrl")
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 cordova.activity.startActivity(intent)
@@ -496,6 +553,7 @@ class Echo : CordovaPlugin() {
                 response.put("requiresRedirect", true)
                 response.put("platform", "android")
                 callbackContext.success(response)
+
             } catch (e: Throwable) {
                 Log.e(TAG, "signInWithMicrosoft error", e)
                 response.put("status", "error")
