@@ -88,6 +88,20 @@ var Echo = {
         exec(success, error, 'Echo', 'signInWithMicrosoft', [pk]);
     },
 
+    signInWithEnterpriseSso: function (email, successCallback, errorCallback) {
+        if (typeof email !== 'string' || email.trim() === '') {
+            if (typeof errorCallback === 'function') {
+                errorCallback('Expected a non-empty email string argument.');
+            }
+            return;
+        }
+        exec(successCallback, errorCallback, 'Echo', 'signInWithEnterpriseSso', [email.trim()]);
+    },
+
+    startHostedAuth: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'Echo', 'startHostedAuth', []);
+    },
+
     signOut: function (successCallback, errorCallback) {
         exec(successCallback, errorCallback, 'Echo', 'signOut', []);
     },

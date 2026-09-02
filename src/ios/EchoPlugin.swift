@@ -516,6 +516,123 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
+    @objc(signInWithEnterpriseSso:)
+    func signInWithEnterpriseSso(command: CDVInvokedUrlCommand) {
+        self.commandDelegate!.run(inBackground: {
+            let email = command.arguments.first as? String ?? ""
+            let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
+            let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
+            let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+            let callbackUrl = !dbJwt.isEmpty ? "https://\(host)/v1/client/sign_ins/callback?__clerk_db_jwt=\(dbJwt)" : "https://\(host)/v1/client/sign_ins/callback"
+
+            var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins")
+            var queryItems = [
+                URLQueryItem(name: "_is_native", value: "true"),
+                URLQueryItem(name: "_clerk_js_version", value: "5.0.0")
+            ]
+            if !dbJwt.isEmpty {
+                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
+            }
+            urlComponents?.queryItems = queryItems
+
+            guard let url = urlComponents?.url else {
+                let errResp: [String: Any] = ["status": "error", "message": "Invalid Clerk API host", "platform": "ios"]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            if !pk.isEmpty {
+                request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            }
+            if !dbJwt.isEmpty {
+                request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+            }
+
+            let encodedEmail = email.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? email
+            let encodedCallback = callbackUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? callbackUrl
+            request.httpBody = "strategy=enterprise_sso&identifier=\(encodedEmail)&_is_native=true&redirect_url=\(encodedCallback)".data(using: .utf8)
+
+            let sem = DispatchSemaphore(value: 0)
+            var targetUrl = ""
+            var clerkError = ""
+
+            URLSession.shared.dataTask(with: request) { data, _, _ in
+                if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let errors = json["errors"] as? [[String: Any]], let firstErr = errors.first {
+                        clerkError = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "")
+                    }
+                    if let resp = json["response"] as? [String: Any], let verification = resp["first_factor_verification"] as? [String: Any],
+                       let extUrl = verification["external_verification_redirect_url"] as? String {
+                        targetUrl = extUrl
+                    }
+                }
+                sem.signal()
+            }.resume()
+            _ = sem.wait(timeout: .now() + 10.0)
+
+            if !clerkError.isEmpty {
+                let errResp: [String: Any] = ["status": "error", "message": clerkError, "error": clerkError, "platform": "ios"]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            guard !targetUrl.isEmpty, let openUrl = URL(string: targetUrl) else {
+                let errResp: [String: Any] = [
+                    "status": "error",
+                    "message": "Could not retrieve Enterprise SSO URL from Clerk.",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            DispatchQueue.main.async {
+                UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
+            }
+
+            let response: [String: Any] = [
+                "status": "success",
+                "message": "Enterprise SSO browser opened.",
+                "url": targetUrl,
+                "requiresRedirect": true,
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+        })
+    }
+
+    @objc(startHostedAuth:)
+    func startHostedAuth(command: CDVInvokedUrlCommand) {
+        self.commandDelegate!.run(inBackground: {
+            let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
+            let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
+            let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+            let targetUrl = !dbJwt.isEmpty ? "https://\(host)/sign-in?__clerk_db_jwt=\(dbJwt)" : "https://\(host)/sign-in"
+
+            guard let openUrl = URL(string: targetUrl) else {
+                let errResp: [String: Any] = ["status": "error", "message": "Invalid Account Portal URL", "platform": "ios"]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            DispatchQueue.main.async {
+                UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
+            }
+
+            let response: [String: Any] = [
+                "status": "success",
+                "message": "Hosted Account Portal opened.",
+                "url": targetUrl,
+                "requiresRedirect": true,
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+        })
+    }
+
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
