@@ -1,5 +1,7 @@
 package org.apache.cordova.plugin.echo
 
+import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import com.clerk.api.Clerk
 import com.clerk.api.ClerkConfigurationOptions
@@ -26,6 +28,7 @@ class Echo : CordovaPlugin() {
     }
 
     private val pluginScope = CoroutineScope(Dispatchers.IO)
+    private var inMemoryPublishableKey: String = ""
 
     override fun execute(
         action: String,
@@ -160,6 +163,7 @@ class Echo : CordovaPlugin() {
 
                 val key = publishableKey ?: ""
                 if (key.isNotEmpty()) {
+                    inMemoryPublishableKey = key
                     try {
                         val context = cordova.activity.applicationContext
                         val options = ClerkConfigurationOptions(
@@ -206,6 +210,7 @@ class Echo : CordovaPlugin() {
             callbackContext.error("Expected a non-empty publishableKey argument.")
             return
         }
+        inMemoryPublishableKey = key
         pluginScope.launch {
             try {
                 val context = cordova.activity.applicationContext
@@ -420,47 +425,75 @@ class Echo : CordovaPlugin() {
         return Pair(errorMessage, errorCode)
     }
 
+    private fun getFrontendApiHost(publishableKey: String): String? {
+        if (publishableKey.isEmpty()) return null
+        val parts = publishableKey.split("_")
+        if (parts.size < 3) return null
+        val encoded = parts[2].trimEnd('$')
+        return try {
+            val decodedBytes = android.util.Base64.decode(
+                encoded,
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP
+            )
+            String(decodedBytes, Charsets.UTF_8).trimEnd('$')
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private fun signInWithMicrosoft(callbackContext: CallbackContext) {
         pluginScope.launch {
             val response = JSONObject()
             try {
-                // Resolve Clerk auth instance
-                val authObj = try { Clerk.auth } catch (t: Throwable) { null }
-                
-                // Find OAuth launcher method on Auth class or Clerk
-                val oAuthMethod = authObj?.javaClass?.methods?.firstOrNull {
-                    it.name.contains("OAuth", ignoreCase = true) || it.name.contains("HostedAuth", ignoreCase = true)
-                } ?: Clerk::class.java.methods.firstOrNull {
-                    it.name.contains("OAuth", ignoreCase = true) || it.name.contains("HostedAuth", ignoreCase = true)
-                }
+                val pk = inMemoryPublishableKey
+                val host = getFrontendApiHost(pk) ?: "clerk.accounts.dev"
+                var targetUrl = "https://$host/sign-in"
 
-                // Resolve OAuthProvider class dynamically
-                val providerClass = listOf(
-                    "com.clerk.api.auth.OAuthProvider",
-                    "com.clerk.android.sdk.OAuthProvider",
-                    "com.clerk.api.models.OAuthProvider"
-                ).mapNotNull { name ->
-                    try { Class.forName(name) } catch (t: Throwable) { null }
-                }.firstOrNull()
-
-                val microsoftEnum = providerClass?.enumConstants?.firstOrNull {
-                    it.toString().contains("MICROSOFT", ignoreCase = true)
-                }
-
-                if (authObj != null && oAuthMethod != null) {
-                    try {
-                        if (microsoftEnum != null && oAuthMethod.parameterTypes.any { it.isAssignableFrom(microsoftEnum.javaClass) }) {
-                            oAuthMethod.invoke(authObj, microsoftEnum)
-                        } else {
-                            oAuthMethod.invoke(authObj)
-                        }
-                    } catch (invokeEx: Throwable) {
-                        Log.w(TAG, "OAuth method invoke warning: ${invokeEx.message}")
+                // Query Clerk Frontend API to get direct Microsoft authorization redirect URL
+                try {
+                    val url = URL("https://$host/v1/client/sign_ins")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                    if (pk.isNotEmpty()) {
+                        conn.setRequestProperty("Authorization", "Bearer $pk")
                     }
+                    conn.doOutput = true
+                    conn.connectTimeout = 7000
+                    conn.readTimeout = 7000
+
+                    val body = "strategy=oauth_microsoft"
+                    conn.outputStream.use { os ->
+                        os.write(body.toByteArray(Charsets.UTF_8))
+                    }
+
+                    val respCode = conn.responseCode
+                    val stream = if (respCode in 200..399) conn.inputStream else conn.errorStream
+                    val respText = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                    conn.disconnect()
+
+                    if (respText.isNotEmpty()) {
+                        val json = JSONObject(respText)
+                        val respObj = json.optJSONObject("response")
+                        val verificationObj = respObj?.optJSONObject("first_factor_verification")
+                        val extUrl = verificationObj?.optString("external_verification_redirect_url", "") ?: ""
+                        if (extUrl.isNotEmpty()) {
+                            targetUrl = extUrl
+                        }
+                    }
+                } catch (netEx: Throwable) {
+                    Log.w(TAG, "Could not obtain dynamic OAuth URL from Clerk, using hosted sign-in fallback: ${netEx.message}")
                 }
+
+                // Launch external browser / Custom Tab for user authentication
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                cordova.activity.startActivity(intent)
 
                 response.put("status", "success")
-                response.put("message", "Microsoft OAuth flow initiated.")
+                response.put("message", "Microsoft OAuth browser opened.")
+                response.put("url", targetUrl)
+                response.put("requiresRedirect", true)
                 response.put("platform", "android")
                 callbackContext.success(response)
             } catch (e: Throwable) {
