@@ -4,7 +4,6 @@ import android.util.Log
 import com.clerk.api.Clerk
 import com.clerk.api.ClerkConfigurationOptions
 import com.clerk.api.SharedSessionSyncConfig
-import com.clerk.api.auth.OAuthProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

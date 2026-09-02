@@ -18,7 +18,7 @@ A production-ready **Cross-Platform Apache Cordova Plugin** providing native **C
 ## 📁 Repository Structure
 
 ```
-clerk-testing-testing/
+clerk-native-sdk-plugin/
 ├── package.json
 ├── plugin.xml                                # Cordova plugin manifest & iOS Keychain Entitlements
 ├── README.md                                 # Full documentation & OutSystems integration guide
@@ -49,14 +49,10 @@ In your OutSystems Mobile / Reactive Application module:
 ```json
 {
     "plugin": {
-        "url": "https://github.com/mohans1136-dev/clerk-testing-testing.git"
+        "url": "https://github.com/shreemukeshrobin/clerk-native-sdk-plugin.git"
     }
 }
 ```
-
-> [!TIP]
-> To lock the build to a specific commit hash, append the commit sha to the URL:  
-> `"url": "https://github.com/mohans1136-dev/clerk-testing-testing#ea9f3fd"`
 
 ---
 
