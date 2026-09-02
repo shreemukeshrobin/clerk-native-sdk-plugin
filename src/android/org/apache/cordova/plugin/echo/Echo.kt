@@ -308,18 +308,69 @@ class Echo : CordovaPlugin() {
         pluginScope.launch {
             val response = JSONObject()
             try {
-                val signInMethod = Clerk::class.java.methods.firstOrNull { it.name.startsWith("signInWithPassword") }
-                if (signInMethod == null) {
+                val result = withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                    Clerk.auth.signInWithPassword {
+                        this.identifier = id
+                        this.password = pass
+                    }
+                }
+
+                if (result == null) {
                     response.put("status", "error")
-                    response.put("message", "Native signInWithPassword method not resolved on current Clerk SDK.")
+                    response.put("message", "Sign in request timed out after ${NETWORK_TIMEOUT_MS / 1000} seconds.")
+                    response.put("errorCode", "timeout")
                     callbackContext.error(response)
                     return@launch
                 }
 
-                response.put("status", "success")
-                response.put("message", "Credentials received. Flow initiated.")
-                response.put("identifier", id)
-                callbackContext.success(response)
+                when (result) {
+                    is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                        val signIn = result.value
+                        val sessionId = signIn.createdSessionId
+                        if (!sessionId.isNullOrEmpty()) {
+                            try {
+                                Clerk.auth.setActive(sessionId = sessionId)
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "Failed to set active session: ${t.message}")
+                            }
+                        }
+                        val user = try { Clerk.user } catch (t: Throwable) { null }
+                        val activeUser = user ?: signIn.userData
+                        response.put("status", "success")
+                        response.put("message", "Sign in successful")
+                        response.put("signInStatus", try { signIn.status.name } catch (t: Throwable) { "COMPLETE" })
+                        response.put("createdSessionId", sessionId ?: "")
+                        response.put("userId", activeUser?.id ?: "")
+                        response.put("firstName", activeUser?.firstName ?: "")
+                        response.put("lastName", activeUser?.lastName ?: "")
+                        response.put("identifier", id)
+                        response.put("platform", "android")
+                        callbackContext.success(response)
+                    }
+
+                    is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                        val errObj = result.error
+                        val errMsg = try {
+                            errObj.errors.firstOrNull()?.longMessage
+                                ?: errObj.errors.firstOrNull()?.message
+                                ?: errObj.message
+                                ?: "Authentication failed"
+                        } catch (t: Throwable) {
+                            errObj.toString()
+                        }
+                        val errCode = try {
+                            errObj.errors.firstOrNull()?.code ?: "auth_failed"
+                        } catch (t: Throwable) {
+                            "auth_failed"
+                        }
+                        response.put("status", "error")
+                        response.put("message", errMsg)
+                        response.put("errorCode", errCode)
+                        response.put("error", errMsg)
+                        response.put("platform", "android")
+                        callbackContext.error(response)
+                    }
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "signInWithPassword error", e)
                 response.put("status", "error")
@@ -385,12 +436,12 @@ class Echo : CordovaPlugin() {
         pluginScope.launch {
             val response = JSONObject()
             try {
-                val signOutMethod = Clerk::class.java.methods.firstOrNull { it.name == "signOut" }
-                if (signOutMethod != null) {
-                    signOutMethod.invoke(null)
+                withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                    Clerk.auth.signOut()
                 }
                 response.put("status", "success")
                 response.put("message", "Signed out successfully")
+                response.put("platform", "android")
                 callbackContext.success(response)
             } catch (e: Throwable) {
                 Log.e(TAG, "signOut error", e)
