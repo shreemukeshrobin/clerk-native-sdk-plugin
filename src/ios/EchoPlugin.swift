@@ -818,6 +818,31 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
+    @objc(getHostedAuthDebugInfo:)
+    func getHostedAuthDebugInfo(command: CDVInvokedUrlCommand) {
+        let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
+        let redirectUrl = command.arguments.count > 0 ? (command.arguments[0] as? String ?? "") : ""
+
+        let effectiveRedirectUrl: String
+        let callbackScheme: String
+        if !redirectUrl.isEmpty, let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty {
+            effectiveRedirectUrl = redirectUrl
+            callbackScheme = scheme
+        } else {
+            callbackScheme = "clerk"
+            effectiveRedirectUrl = "clerk://\(bundleId).callback"
+        }
+
+        let response: [String: Any] = [
+            "bundleId": bundleId,
+            "callbackScheme": callbackScheme,
+            "effectiveRedirectUrl": effectiveRedirectUrl,
+            "pluginVersion": "1.0.9",
+            "platform": "ios"
+        ]
+        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+    }
+
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {

@@ -120,6 +120,18 @@ var Echo = {
         exec(successCallback, errorCallback, 'Echo', 'startHostedAuth', [url]);
     },
 
+    // Debug helper: returns the bundleId/redirect URL startHostedAuth would use,
+    // without opening a browser. Useful for confirming what's actually deployed.
+    getHostedAuthDebugInfo: function (redirectUrl, successCallback, errorCallback) {
+        if (typeof redirectUrl === 'function') {
+            errorCallback = successCallback;
+            successCallback = redirectUrl;
+            redirectUrl = '';
+        }
+        var url = (typeof redirectUrl === 'string') ? redirectUrl : '';
+        exec(successCallback, errorCallback, 'Echo', 'getHostedAuthDebugInfo', [url]);
+    },
+
     signOut: function (successCallback, errorCallback) {
         exec(successCallback, errorCallback, 'Echo', 'signOut', []);
     },
