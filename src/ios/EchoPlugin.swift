@@ -1,13 +1,15 @@
 import Foundation
 import Security
 import WebKit
+import AuthenticationServices
 
 /**
  * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
  */
 @objc(EchoPlugin)
-class EchoPlugin : CDVPlugin, ASWebAuthenticationPresentationContextProviding {
-    @available(iOS 12.0, *)
+class EchoPlugin : CDVPlugin {
+
+    private static let TAG = "EchoPlugin"
     private static let SHARED_KEYCHAIN_SERVICE = "com.luvelo.clerk.sharedservice"
     private static let KEYCHAIN_ACCOUNT_KEY = "active_clerk_session_jwt"
     private static let KEYCHAIN_SESSION_ID_KEY = "active_clerk_session_id"
@@ -929,5 +931,12 @@ class EchoPlugin : CDVPlugin, ASWebAuthenticationPresentationContextProviding {
             ]
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
         })
+    }
+}
+
+@available(iOS 13.0, *)
+extension EchoPlugin: ASWebAuthenticationPresentationContextProviding {
+    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        return self.viewController.view.window ?? ASPresentationAnchor()
     }
 }

@@ -77,6 +77,11 @@
             </array>
         </config-file>
 
+        <!-- iOS Frameworks -->
+        <framework src="AuthenticationServices.framework" />
+        <framework src="Security.framework" />
+        <framework src="WebKit.framework" />
+
         <!-- Source & Header Files -->
         <header-file src="src/ios/EchoPlugin-Bridging-Header.h" type="BridgingHeader" />
         <source-file src="src/ios/EchoPlugin.swift" />
