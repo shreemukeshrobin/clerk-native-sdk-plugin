@@ -670,9 +670,11 @@ class EchoPlugin : CDVPlugin {
                 effectiveRedirectUrl = redirectUrl
                 callbackScheme = scheme
             } else {
-                // Auto-derive from bundle ID to match Clerk Dashboard entry: "bundleId://callback"
-                callbackScheme = bundleId
-                effectiveRedirectUrl = "\(bundleId)://callback"
+                // "clerk" is registered as a CFBundleURLScheme for every build (plugin.xml),
+                // so this works for any bundle ID without per-app hardcoding.
+                // Matches Clerk Dashboard allowlist entry: clerk://<bundleId>.callback
+                callbackScheme = "clerk"
+                effectiveRedirectUrl = "clerk://\(bundleId).callback"
             }
 
             // 4. Build final URL with comprehensive redirect parameters + dev browser JWT
