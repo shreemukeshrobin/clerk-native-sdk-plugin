@@ -675,10 +675,14 @@ class EchoPlugin : CDVPlugin {
                 effectiveRedirectUrl = "\(bundleId)://callback"
             }
 
-            // 4. Build final URL with redirect_url + dev browser JWT
+            // 4. Build final URL with comprehensive redirect parameters + dev browser JWT
             var urlComponents = URLComponents(string: signInUrl) ?? URLComponents()
             var queryItems = urlComponents.queryItems ?? []
             queryItems.append(URLQueryItem(name: "redirect_url", value: effectiveRedirectUrl))
+            queryItems.append(URLQueryItem(name: "force_redirect_url", value: effectiveRedirectUrl))
+            queryItems.append(URLQueryItem(name: "fallback_redirect_url", value: effectiveRedirectUrl))
+            queryItems.append(URLQueryItem(name: "after_sign_in_url", value: effectiveRedirectUrl))
+            queryItems.append(URLQueryItem(name: "after_sign_up_url", value: effectiveRedirectUrl))
             if !dbJwt.isEmpty {
                 queryItems.append(URLQueryItem(name: "__clerk_db_jwt", value: dbJwt))
             }
@@ -703,21 +707,79 @@ class EchoPlugin : CDVPlugin {
                             }
                         }
 
-                        // Auth completed — fetch user info from Clerk in background
+                        // Query Clerk /v1/client in background to synchronize session into shared Keychain
                         self.commandDelegate!.run(inBackground: {
-                            let userInfo = self.fetchClerkUserInfo()
-                            let response: [String: Any] = [
+                            var userId = ""
+                            var firstName = ""
+                            var lastName = ""
+                            var sessionId = ""
+
+                            if let clientUrl = URL(string: "https://\(host)/v1/client") {
+                                var req = URLRequest(url: clientUrl)
+                                req.httpMethod = "GET"
+                                if !pk.isEmpty {
+                                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+                                }
+                                let dbToken = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+                                if !dbToken.isEmpty {
+                                    req.setValue(dbToken, forHTTPHeaderField: "Clerk-Db-Jwt")
+                                }
+
+                                let sem = DispatchSemaphore(value: 0)
+                                URLSession.shared.dataTask(with: req) { data, resp, _ in
+                                    self.extractAndSaveDevBrowserJwt(response: resp)
+                                    if let data = data,
+                                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                       let clientObj = json["client"] as? [String: Any],
+                                       let sessionsList = clientObj["sessions"] as? [[String: Any]],
+                                       let activeSession = sessionsList.first {
+
+                                        sessionId = activeSession["id"] as? String ?? ""
+                                        if let lastActiveToken = activeSession["last_active_token"] as? [String: Any],
+                                           let jwt = lastActiveToken["jwt"] as? String {
+                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwt)
+                                        }
+                                        if let userObj = activeSession["user"] as? [String: Any] {
+                                            userId = userObj["id"] as? String ?? ""
+                                            firstName = userObj["first_name"] as? String ?? ""
+                                            lastName = userObj["last_name"] as? String ?? ""
+                                            if let emailList = userObj["email_addresses"] as? [[String: Any]],
+                                               let firstEmail = emailList.first,
+                                               let email = firstEmail["email_address"] as? String {
+                                                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY, value: email)
+                                            }
+                                        }
+
+                                        if !sessionId.isEmpty {
+                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: sessionId)
+                                        }
+                                        if !userId.isEmpty {
+                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: userId)
+                                        }
+                                        if !firstName.isEmpty {
+                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY, value: firstName)
+                                        }
+                                        if !lastName.isEmpty {
+                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY, value: lastName)
+                                        }
+                                    }
+                                    sem.signal()
+                                }.resume()
+                                _ = sem.wait(timeout: .now() + 5.0)
+                            }
+
+                            var response: [String: Any] = [
                                 "status": "success",
-                                "message": "Hosted authentication completed.",
+                                "message": "Hosted authentication completed successfully.",
                                 "isSignedIn": true,
-                                "userId": userInfo["userId"] as? String ?? "",
-                                "firstName": userInfo["firstName"] as? String ?? "",
-                                "lastName": userInfo["lastName"] as? String ?? "",
-                                "email": userInfo["email"] as? String ?? "",
-                                "sessionId": userInfo["sessionId"] as? String ?? "",
                                 "callbackUrl": callbackURL?.absoluteString ?? "",
                                 "platform": "ios"
                             ]
+                            if !userId.isEmpty { response["userId"] = userId }
+                            if !firstName.isEmpty { response["firstName"] = firstName }
+                            if !lastName.isEmpty { response["lastName"] = lastName }
+                            if !sessionId.isEmpty { response["sessionId"] = sessionId }
+
                             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
                         })
                     }
@@ -754,100 +816,16 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
-    private func fetchClerkUserInfo() -> [String: Any] {
-        var sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
-        var userId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY) ?? ""
-        var firstName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY) ?? ""
-        var lastName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY) ?? ""
-        var email = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY) ?? ""
-
-        let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-        if let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty, var urlComponents = URLComponents(string: "https://\(host)/v1/client") {
-            var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
-            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
-            }
-            urlComponents.queryItems = queryItems
-
-            if let url = urlComponents.url {
-                var request = URLRequest(url: url)
-                request.httpMethod = "GET"
-                if !pk.isEmpty {
-                    request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                }
-                if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                    request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
-                }
-
-                let semaphore = DispatchSemaphore(value: 0)
-                var responseJson: [String: Any]?
-                var statusCode: Int = 0
-
-                let task = URLSession.shared.dataTask(with: request) { data, resp, _ in
-                    self.extractAndSaveDevBrowserJwt(response: resp)
-                    if let httpResp = resp as? HTTPURLResponse {
-                        statusCode = httpResp.statusCode
-                    }
-                    if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        responseJson = json
-                    }
-                    semaphore.signal()
-                }
-                task.resume()
-                _ = semaphore.wait(timeout: .now() + 4.0)
-
-                if (statusCode == 200 || statusCode == 304), let json = responseJson {
-                    let clientObj = (json["response"] as? [String: Any]) ?? (json["client"] as? [String: Any])
-                    if let client = clientObj, let sessionsList = client["sessions"] as? [[String: Any]], !sessionsList.isEmpty {
-                        let activeSession = sessionsList.first(where: { ($0["status"] as? String) == "active" }) ?? sessionsList.first!
-                        if let sId = activeSession["id"] as? String, !sId.isEmpty {
-                            sessionId = sId
-                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: sessionId)
-                        }
-                        if let tokenObj = activeSession["last_active_token"] as? [String: Any], let jwt = tokenObj["jwt"] as? String, !jwt.isEmpty {
-                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwt)
-                        }
-
-                        if let userObj = activeSession["user"] as? [String: Any] {
-                            if let uId = userObj["id"] as? String, !uId.isEmpty {
-                                userId = uId
-                                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: userId)
-                            }
-                            if let fName = userObj["first_name"] as? String {
-                                firstName = fName
-                                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY, value: firstName)
-                            }
-                            if let lName = userObj["last_name"] as? String {
-                                lastName = lName
-                                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY, value: lastName)
-                            }
-                            if let emailAddresses = userObj["email_addresses"] as? [[String: Any]], let firstEmail = emailAddresses.first, let em = firstEmail["email_address"] as? String {
-                                email = em
-                                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY, value: email)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return [
-            "sessionId": sessionId,
-            "userId": userId,
-            "firstName": firstName,
-            "lastName": lastName,
-            "email": email,
-            "isSignedIn": !sessionId.isEmpty || !userId.isEmpty
-        ]
-    }
-
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
-        self.commandDelegate!.run(inBackground: {
-            let userInfo = self.fetchClerkUserInfo()
-            let isSignedIn = userInfo["isSignedIn"] as? Bool ?? false
+            let sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
+            let userId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY) ?? ""
+            let firstName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY) ?? ""
+            let lastName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY) ?? ""
+            let email = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY) ?? ""
 
-            if !isSignedIn {
+            // If no active session or user exists in Keychain, user is signed out
+            if sessionId.isEmpty && userId.isEmpty {
                 let response: [String: Any] = [
                     "status": "success",
                     "isSignedIn": false,
@@ -858,9 +836,71 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            var response: [String: Any] = userInfo
-            response["status"] = "success"
-            response["platform"] = "ios"
+            // We have an active session! Return signed-in user metadata
+            var response: [String: Any] = [
+                "status": "success",
+                "isSignedIn": true,
+                "userId": userId.isEmpty ? "user_shared_session" : userId,
+                "firstName": firstName,
+                "lastName": lastName,
+                "email": email,
+                "sessionId": sessionId,
+                "platform": "ios"
+            ]
+
+            // Best-effort live refresh from Clerk /v1/client using Publishable Key
+            let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
+            if let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty, var urlComponents = URLComponents(string: "https://\(host)/v1/client") {
+                var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
+                if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                    queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
+                }
+                urlComponents.queryItems = queryItems
+
+                if let url = urlComponents.url {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "GET"
+                    request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+                    if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                        request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+                    }
+
+                    let semaphore = DispatchSemaphore(value: 0)
+                    var responseJson: [String: Any]?
+                    var statusCode: Int = 0
+
+                    let task = URLSession.shared.dataTask(with: request) { data, resp, _ in
+                        self.extractAndSaveDevBrowserJwt(response: resp)
+                        if let httpResp = resp as? HTTPURLResponse {
+                            statusCode = httpResp.statusCode
+                        }
+                        if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            responseJson = json
+                        }
+                        semaphore.signal()
+                    }
+                    task.resume()
+                    _ = semaphore.wait(timeout: .now() + 3.0)
+
+                    if (statusCode == 200 || statusCode == 304), let json = responseJson, let clientObj = json["client"] as? [String: Any],
+                       let sessionsList = clientObj["sessions"] as? [[String: Any]], let activeSession = sessionsList.first(where: { ($0["id"] as? String) == sessionId }) ?? sessionsList.first,
+                       let userObj = activeSession["user"] as? [String: Any] {
+
+                        let freshUserId = userObj["id"] as? String ?? userId
+                        let freshFirstName = userObj["first_name"] as? String ?? firstName
+                        let freshLastName = userObj["last_name"] as? String ?? lastName
+
+                        self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: freshUserId)
+                        self.saveToKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY, value: freshFirstName)
+                        self.saveToKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY, value: freshLastName)
+
+                        response["userId"] = freshUserId
+                        response["firstName"] = freshFirstName
+                        response["lastName"] = freshLastName
+                    }
+                }
+            }
+
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
         })
     }
