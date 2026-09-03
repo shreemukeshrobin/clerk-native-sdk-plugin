@@ -6,9 +6,8 @@ import WebKit
  * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
  */
 @objc(EchoPlugin)
-class EchoPlugin : CDVPlugin {
-
-    private static let TAG = "EchoPlugin"
+class EchoPlugin : CDVPlugin, ASWebAuthenticationPresentationContextProviding {
+    @available(iOS 12.0, *)
     private static let SHARED_KEYCHAIN_SERVICE = "com.luvelo.clerk.sharedservice"
     private static let KEYCHAIN_ACCOUNT_KEY = "active_clerk_session_jwt"
     private static let KEYCHAIN_SESSION_ID_KEY = "active_clerk_session_id"
@@ -666,18 +665,8 @@ class EchoPlugin : CDVPlugin {
             }
 
             DispatchQueue.main.async {
-                UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
-            }
-
-            let response: [String: Any] = [
-                "status": "success",
-                "message": "Hosted Account Portal opened.",
-                "url": targetUrl,
-                "requiresRedirect": true,
-                "platform": "ios"
-            ]
-            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-        })
+                if #available(iOS 12.0, *) {
+                    let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
     }
 
     @objc(getCurrentUser:)
