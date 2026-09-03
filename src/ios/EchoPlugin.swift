@@ -669,14 +669,10 @@ class EchoPlugin : CDVPlugin {
             if !redirectUrl.isEmpty, let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty {
                 effectiveRedirectUrl = redirectUrl
                 callbackScheme = scheme
-            } else if bundleId.lowercased().contains("app2") {
-                // Matches Clerk Dashboard Allowlist Row 4: clerk://org.luvelo.dev.ClerkApp2.callback
-                callbackScheme = "clerk"
-                effectiveRedirectUrl = "clerk://org.luvelo.dev.ClerkApp2.callback"
             } else {
-                // Matches Clerk Dashboard Allowlist Row 5: org.luvelo.dev.ClerkApp1://callback
-                callbackScheme = "org.luvelo.dev.ClerkApp1"
-                effectiveRedirectUrl = "org.luvelo.dev.ClerkApp1://callback"
+                // Auto-derive from bundle ID to match Clerk Dashboard entry: "bundleId://callback"
+                callbackScheme = bundleId
+                effectiveRedirectUrl = "\(bundleId)://callback"
             }
 
             // 4. Build final URL with comprehensive redirect parameters + dev browser JWT
