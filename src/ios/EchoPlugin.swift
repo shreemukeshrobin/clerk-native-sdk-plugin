@@ -614,8 +614,31 @@ class EchoPlugin : CDVPlugin {
         self.commandDelegate!.run(inBackground: {
             let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
             let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
-            let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
-            let targetUrl = !dbJwt.isEmpty ? "https://\(host)/sign-in?__clerk_db_jwt=\(dbJwt)" : "https://\(host)/sign-in"
+            
+            // In Clerk, the Account Portal webpage domain is the host without the 'clerk.' REST API subdomain prefix
+            var portalHost = host
+            if portalHost.hasPrefix("clerk.") {
+                portalHost = String(portalHost.dropFirst(6))
+            }
+
+            var dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+            if dbJwt.isEmpty && !pk.isEmpty {
+                // Fetch dev browser JWT to prevent browser unauthenticated errors
+                let sem = DispatchSemaphore(value: 0)
+                if let clientUrl = URL(string: "https://\(host)/v1/client?_is_native=true&_clerk_js_version=5.0.0") {
+                    var req = URLRequest(url: clientUrl)
+                    req.httpMethod = "POST"
+                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+                    URLSession.shared.dataTask(with: req) { _, response, _ in
+                        self.extractAndSaveDevBrowserJwt(response: response)
+                        sem.signal()
+                    }.resume()
+                    _ = sem.wait(timeout: .now() + 5.0)
+                    dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+                }
+            }
+
+            let targetUrl = !dbJwt.isEmpty ? "https://\(portalHost)/sign-in?__clerk_db_jwt=\(dbJwt)" : "https://\(portalHost)/sign-in"
 
             guard let openUrl = URL(string: targetUrl) else {
                 let errResp: [String: Any] = ["status": "error", "message": "Invalid Account Portal URL", "platform": "ios"]
