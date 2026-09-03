@@ -105,6 +105,11 @@ class Echo : CordovaPlugin() {
                 this.signInWithEnterpriseSso(email, callbackContext)
                 true
             }
+            "signUpWithEnterpriseSso" -> {
+                val email = args.optString(0, "")
+                this.signUpWithEnterpriseSso(email, callbackContext)
+                true
+            }
             "startHostedAuth" -> {
                 this.startHostedAuth(callbackContext)
                 true
@@ -712,6 +717,82 @@ class Echo : CordovaPlugin() {
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "signInWithEnterpriseSso exception", e)
+                response.put("status", "error")
+                response.put("message", e.message ?: e.toString())
+                response.put("errorCode", "native_sso_error")
+                response.put("platform", "android")
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    private fun signUpWithEnterpriseSso(emailParam: String?, callbackContext: CallbackContext) {
+        val emailToUse = (emailParam ?: "").trim()
+        pluginScope.launch {
+            val response = JSONObject()
+            try {
+                Log.d(TAG, "Initiating native Clerk.auth.signUpWithEnterpriseSso for email: $emailToUse")
+
+                val result = withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                    if (emailToUse.isNotEmpty()) {
+                        Clerk.auth.signUpWithEnterpriseSso {
+                            this.email = emailToUse
+                        }
+                    } else {
+                        Clerk.auth.signUpWithEnterpriseSso { }
+                    }
+                }
+
+                if (result == null) {
+                    response.put("status", "error")
+                    response.put("message", "Enterprise SSO sign-up timed out.")
+                    response.put("errorCode", "timeout")
+                    response.put("platform", "android")
+                    callbackContext.error(response)
+                    return@launch
+                }
+
+                when (result) {
+                    is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                        val session = result.value
+                        val sessionId = session?.id ?: ""
+                        if (sessionId.isNotEmpty()) {
+                            try {
+                                Clerk.auth.setActive(sessionId = sessionId)
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "setActive warning: ${t.message}")
+                            }
+                        }
+
+                        val user = try { Clerk.user } catch (t: Throwable) { null }
+                        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
+                        val effectiveUser = user ?: activeSession?.user ?: session?.user
+                        val clerkUserId = effectiveUser?.id ?: session?.userId ?: ""
+
+                        response.put("status", "success")
+                        response.put("message", "Enterprise SSO sign-up successful.")
+                        response.put("isSignedIn", true)
+                        response.put("userId", clerkUserId)
+                        response.put("sessionId", sessionId)
+                        response.put("firstName", effectiveUser?.firstName ?: "")
+                        response.put("lastName", effectiveUser?.lastName ?: "")
+                        response.put("platform", "android")
+                        callbackContext.success(response)
+                    }
+
+                    is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                        val (errMessage, errCode) = extractClerkError(result)
+                        Log.e(TAG, "signUpWithEnterpriseSso FAILURE: $errMessage (code: $errCode)")
+                        response.put("status", "error")
+                        response.put("message", errMessage)
+                        response.put("errorCode", errCode)
+                        response.put("error", errMessage)
+                        response.put("platform", "android")
+                        callbackContext.error(response)
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "signUpWithEnterpriseSso exception", e)
                 response.put("status", "error")
                 response.put("message", e.message ?: e.toString())
                 response.put("errorCode", "native_sso_error")

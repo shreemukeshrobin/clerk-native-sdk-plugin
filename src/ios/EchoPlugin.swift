@@ -604,6 +604,11 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
+    @objc(signUpWithEnterpriseSso:)
+    func signUpWithEnterpriseSso(command: CDVInvokedUrlCommand) {
+        self.signInWithEnterpriseSso(command: command)
+    }
+
     @objc(startHostedAuth:)
     func startHostedAuth(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
