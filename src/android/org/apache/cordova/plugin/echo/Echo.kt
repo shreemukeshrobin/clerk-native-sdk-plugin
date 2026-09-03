@@ -758,67 +758,8 @@ class Echo : CordovaPlugin() {
     }
 
     private fun signUpWithEnterpriseSso(emailParam: String?, callbackContext: CallbackContext) {
-        val emailToUse = (emailParam ?: "").trim()
-        pluginScope.launch {
-            val response = JSONObject()
-            try {
-                Log.d(TAG, "Initiating native Clerk.auth.signUpWithEnterpriseSso for email: $emailToUse")
-
-                val result = withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
-                    if (emailToUse.isNotEmpty()) {
-                        Clerk.auth.signUpWithEnterpriseSso {
-                            this.email = emailToUse
-                        }
-                    } else {
-                        Clerk.auth.signUpWithEnterpriseSso { }
-                    }
-                }
-
-                if (result == null) {
-                    response.put("status", "error")
-                    response.put("message", "Enterprise SSO sign-up timed out.")
-                    response.put("errorCode", "timeout")
-                    response.put("platform", "android")
-                    callbackContext.error(response)
-                    return@launch
-                }
-
-                when (result) {
-                    is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        val (sessionId, clerkUserId, names) = extractSessionInfo(result.value)
-                        val (firstName, lastName) = names
-
-                        response.put("status", "success")
-                        response.put("message", "Enterprise SSO sign-up successful.")
-                        response.put("isSignedIn", true)
-                        response.put("userId", clerkUserId)
-                        response.put("sessionId", sessionId)
-                        response.put("firstName", firstName)
-                        response.put("lastName", lastName)
-                        response.put("platform", "android")
-                        callbackContext.success(response)
-                    }
-
-                    is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                        val (errMessage, errCode) = extractClerkError(result)
-                        Log.e(TAG, "signUpWithEnterpriseSso FAILURE: $errMessage (code: $errCode)")
-                        response.put("status", "error")
-                        response.put("message", errMessage)
-                        response.put("errorCode", errCode)
-                        response.put("error", errMessage)
-                        response.put("platform", "android")
-                        callbackContext.error(response)
-                    }
-                }
-            } catch (e: Throwable) {
-                Log.e(TAG, "signUpWithEnterpriseSso exception", e)
-                response.put("status", "error")
-                response.put("message", e.message ?: e.toString())
-                response.put("errorCode", "native_sso_error")
-                response.put("platform", "android")
-                callbackContext.error(response)
-            }
-        }
+        // In Clerk, Enterprise SSO uses signInWithEnterpriseSso for both new user registration (JIT provisioning) and returning logins.
+        signInWithEnterpriseSso(emailParam, callbackContext)
     }
 
     private fun startHostedAuth(callbackContext: CallbackContext) {
