@@ -1,23 +1,13 @@
 package org.apache.cordova.plugin.echo
 
-import android.app.Dialog
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
-import android.view.View
-import android.view.ViewGroup
-import android.webkit.CookieManager
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import com.clerk.api.Clerk
 import com.clerk.api.ClerkConfigurationOptions
 import com.clerk.api.SharedSessionSyncConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.apache.cordova.CallbackContext
@@ -594,157 +584,6 @@ class Echo : CordovaPlugin() {
         return Pair(targetUrl, clerkErrorMessage)
     }
 
-    private fun launchInAppAuthDialog(targetUrl: String, host: String, dbJwt: String, callbackContext: CallbackContext) {
-        cordova.activity.runOnUiThread {
-            try {
-                val context = cordova.activity
-                val dialog = Dialog(context, android.R.style.Theme_DeviceDefault_Light_NoActionBar_Fullscreen)
-
-                val rootLayout = LinearLayout(context).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                    setBackgroundColor(0xFFF8FAFC.toInt())
-                }
-
-                // Top Header Bar
-                val headerLayout = LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    setPadding(40, 32, 40, 32)
-                    setBackgroundColor(0xFF1E293B.toInt())
-                }
-
-                val titleText = TextView(context).apply {
-                    text = "Sign in with Microsoft"
-                    setTextColor(0xFFFFFFFF.toInt())
-                    textSize = 17f
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f)
-                }
-
-                val closeButton = TextView(context).apply {
-                    text = "✕"
-                    setTextColor(0xFFFFFFFF.toInt())
-                    textSize = 22f
-                    setPadding(24, 0, 8, 0)
-                    setOnClickListener {
-                        dialog.dismiss()
-                        val errResp = JSONObject().apply {
-                            put("status", "error")
-                            put("message", "Sign in cancelled by user.")
-                        }
-                        callbackContext.error(errResp)
-                    }
-                }
-
-                headerLayout.addView(titleText)
-                headerLayout.addView(closeButton)
-
-                // Progress Bar
-                val progressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
-                    isIndeterminate = true
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 8)
-                }
-
-                // WebView
-                val webView = WebView(context).apply {
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
-                }
-
-                // Configure Cookies
-                val cookieManager = CookieManager.getInstance()
-                cookieManager.setAcceptCookie(true)
-                cookieManager.setAcceptThirdPartyCookies(webView, true)
-                if (dbJwt.isNotEmpty()) {
-                    cookieManager.setCookie("https://$host", "__clerk_db_jwt=$dbJwt; path=/; domain=.$host; Secure; SameSite=None")
-                    cookieManager.setCookie("https://clerk.accounts.dev", "__clerk_db_jwt=$dbJwt; path=/; domain=.clerk.accounts.dev; Secure; SameSite=None")
-                    cookieManager.flush()
-                }
-
-                // Configure WebSettings
-                webView.settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    databaseEnabled = true
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
-                    userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-                }
-
-                var isCompleted = false
-
-                webView.webViewClient = object : WebViewClient() {
-                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                        progressBar.visibility = View.VISIBLE
-                        super.onPageStarted(view, url, favicon)
-                    }
-
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        progressBar.visibility = View.GONE
-                        super.onPageFinished(view, url)
-                    }
-
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
-                        val currentUrl = request?.url?.toString() ?: ""
-                        return handleInterceptUrl(currentUrl)
-                    }
-
-                    @Deprecated("Deprecated in Java")
-                    override fun shouldOverrideUrlLoading(view: WebView?, currentUrl: String?): Boolean {
-                        return handleInterceptUrl(currentUrl ?: "")
-                    }
-
-                    private fun handleInterceptUrl(currentUrl: String): Boolean {
-                        Log.d(TAG, "In-App Auth navigation: $currentUrl")
-                        if ((currentUrl.contains("/v1/client/sign_ins/callback") || currentUrl.contains("status=complete") || currentUrl.contains("created_session_id")) && !isCompleted) {
-                            isCompleted = true
-                            pluginScope.launch {
-                                kotlinx.coroutines.delay(1500)
-                                val user = try { Clerk.user } catch (t: Throwable) { null }
-                                val session = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
-                                val effectiveUser = user ?: session?.user
-
-                                val res = JSONObject().apply {
-                                    put("status", "success")
-                                    put("message", "Microsoft sign in completed successfully.")
-                                    put("isSignedIn", true)
-                                    put("userId", effectiveUser?.id ?: "")
-                                    put("firstName", effectiveUser?.firstName ?: "")
-                                    put("lastName", effectiveUser?.lastName ?: "")
-                                    put("sessionId", session?.id ?: "")
-                                    put("platform", "android")
-                                }
-
-                                cordova.activity.runOnUiThread {
-                                    try { dialog.dismiss() } catch (t: Throwable) {}
-                                    callbackContext.success(res)
-                                }
-                            }
-                            return false
-                        }
-                        return false
-                    }
-                }
-
-                rootLayout.addView(headerLayout)
-                rootLayout.addView(progressBar)
-                rootLayout.addView(webView)
-
-                dialog.setContentView(rootLayout)
-                dialog.show()
-
-                webView.loadUrl(targetUrl)
-
-            } catch (t: Throwable) {
-                Log.e(TAG, "Failed to launch in-app auth dialog", t)
-                val errResp = JSONObject().apply {
-                    put("status", "error")
-                    put("message", "Failed to launch in-app authentication: ${t.message}")
-                }
-                callbackContext.error(errResp)
-            }
-        }
-    }
-
     private fun signInWithMicrosoft(publishableKeyParam: String?, callbackContext: CallbackContext) {
         pluginScope.launch {
             val response = JSONObject()
@@ -758,8 +597,12 @@ class Echo : CordovaPlugin() {
                 }
 
                 val host = getFrontendApiHost(pk) ?: "clerk.accounts.dev"
-                val callbackUrl = "https://$host/v1/client/sign_ins/callback"
                 val dbJwt = getOrFetchDevBrowserJwt(host, pk)
+                val callbackUrl = if (dbJwt.isNotEmpty()) {
+                    "https://$host/v1/client/sign_ins/callback?__clerk_db_jwt=" + URLEncoder.encode(dbJwt, "UTF-8")
+                } else {
+                    "https://$host/v1/client/sign_ins/callback"
+                }
 
                 val (targetUrl, clerkErrorMessage) = queryClerkOAuth(host, pk, callbackUrl)
 
@@ -781,8 +624,17 @@ class Echo : CordovaPlugin() {
                     return@launch
                 }
 
-                Log.d(TAG, "Launching Microsoft In-App Authentication Dialog: $targetUrl")
-                launchInAppAuthDialog(targetUrl, host, dbJwt, callbackContext)
+                Log.d(TAG, "Launching Microsoft OAuth in external browser: $targetUrl")
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                cordova.activity.startActivity(intent)
+
+                response.put("status", "success")
+                response.put("message", "Microsoft OAuth browser opened.")
+                response.put("url", targetUrl)
+                response.put("requiresRedirect", true)
+                response.put("platform", "android")
+                callbackContext.success(response)
 
             } catch (e: Throwable) {
                 Log.e(TAG, "signInWithMicrosoft error", e)
