@@ -22,6 +22,9 @@ class EchoPlugin : CDVPlugin {
 
     private var inMemoryPublishableKey: String = ""
 
+    // Holds ASWebAuthenticationSession strongly to prevent premature deallocation (iOS 12+)
+    private var authSession: AnyObject?
+
     // MARK: - Explicit Keychain & Cookie Cleaning
 
     private func purgeAllClerkCookies() {
