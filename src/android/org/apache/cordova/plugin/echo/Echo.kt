@@ -455,7 +455,7 @@ class Echo : CordovaPlugin() {
     /**
      * Safely extract sessionId, userId, and user metadata from any Clerk authentication result.
      */
-    private fun extractSessionInfo(resultValue: Any?): Triple<String, String, Pair<String, String>> {
+    private suspend fun extractSessionInfo(resultValue: Any?): Triple<String, String, Pair<String, String>> {
         var sessionId = ""
         var userId = ""
         var firstName = ""
