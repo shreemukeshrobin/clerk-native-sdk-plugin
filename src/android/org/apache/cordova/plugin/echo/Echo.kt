@@ -370,28 +370,15 @@ class Echo : CordovaPlugin() {
 
                 when (result) {
                     is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        val signIn = result.value
-                        val sessionId = signIn.createdSessionId
-                        if (!sessionId.isNullOrEmpty()) {
-                            try {
-                                Clerk.auth.setActive(sessionId = sessionId)
-                            } catch (t: Throwable) {
-                                Log.w(TAG, "Failed to set active session: ${t.message}")
-                            }
-                        }
-
-                        val user = try { Clerk.user } catch (t: Throwable) { null }
-                        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
-                        val effectiveUser = user ?: activeSession?.user
+                        val (sessionId, clerkUserId, names) = extractSessionInfo(result.value)
+                        val (firstName, lastName) = names
 
                         response.put("status", "success")
                         response.put("message", "Sign in successful")
-                        response.put("signInId", signIn.id)
-                        response.put("signInStatus", try { signIn.status.name } catch (t: Throwable) { "COMPLETE" })
-                        response.put("createdSessionId", sessionId ?: "")
-                        response.put("userId", effectiveUser?.id ?: "")
-                        response.put("firstName", effectiveUser?.firstName ?: "")
-                        response.put("lastName", effectiveUser?.lastName ?: "")
+                        response.put("createdSessionId", sessionId)
+                        response.put("userId", clerkUserId)
+                        response.put("firstName", firstName)
+                        response.put("lastName", lastName)
                         response.put("identifier", id)
                         response.put("platform", "android")
                         callbackContext.success(response)
@@ -463,6 +450,62 @@ class Echo : CordovaPlugin() {
         }
 
         return Pair(errorMessage, errorCode)
+    }
+
+    /**
+     * Safely extract sessionId, userId, and user metadata from any Clerk authentication result.
+     */
+    private fun extractSessionInfo(resultValue: Any?): Triple<String, String, Pair<String, String>> {
+        var sessionId = ""
+        var userId = ""
+        var firstName = ""
+        var lastName = ""
+
+        if (resultValue != null) {
+            val candidates = listOf("getCreatedSessionId", "getSessionId", "getId")
+            for (mName in candidates) {
+                try {
+                    val m = resultValue.javaClass.getMethod(mName)
+                    val s = m.invoke(resultValue) as? String
+                    if (!s.isNullOrEmpty()) {
+                        sessionId = s
+                        break
+                    }
+                } catch (t: Throwable) {}
+            }
+            if (sessionId.isEmpty()) {
+                val fieldNames = listOf("createdSessionId", "sessionId", "id")
+                for (fName in fieldNames) {
+                    try {
+                        val f = resultValue.javaClass.getDeclaredField(fName)
+                        f.isAccessible = true
+                        val s = f.get(resultValue) as? String
+                        if (!s.isNullOrEmpty()) {
+                            sessionId = s
+                            break
+                        }
+                    } catch (t: Throwable) {}
+                }
+            }
+        }
+
+        if (sessionId.isNotEmpty()) {
+            try {
+                Clerk.auth.setActive(sessionId = sessionId)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to set active session: ${t.message}")
+            }
+        }
+
+        val user = try { Clerk.user } catch (t: Throwable) { null }
+        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
+        val effectiveUser = user ?: activeSession?.user
+
+        userId = effectiveUser?.id ?: ""
+        firstName = effectiveUser?.firstName ?: ""
+        lastName = effectiveUser?.lastName ?: ""
+
+        return Triple(sessionId, userId, Pair(firstName, lastName))
     }
 
     private fun getFrontendApiHost(publishableKey: String): String? {
@@ -678,28 +721,16 @@ class Echo : CordovaPlugin() {
 
                 when (result) {
                     is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        val session = result.value
-                        val sessionId = session?.id ?: ""
-                        if (sessionId.isNotEmpty()) {
-                            try {
-                                Clerk.auth.setActive(sessionId = sessionId)
-                            } catch (t: Throwable) {
-                                Log.w(TAG, "setActive warning: ${t.message}")
-                            }
-                        }
-
-                        val user = try { Clerk.user } catch (t: Throwable) { null }
-                        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
-                        val effectiveUser = user ?: activeSession?.user ?: session?.user
-                        val clerkUserId = effectiveUser?.id ?: session?.userId ?: ""
+                        val (sessionId, clerkUserId, names) = extractSessionInfo(result.value)
+                        val (firstName, lastName) = names
 
                         response.put("status", "success")
                         response.put("message", "Enterprise SSO sign-in successful.")
                         response.put("isSignedIn", true)
                         response.put("userId", clerkUserId)
                         response.put("sessionId", sessionId)
-                        response.put("firstName", effectiveUser?.firstName ?: "")
-                        response.put("lastName", effectiveUser?.lastName ?: "")
+                        response.put("firstName", firstName)
+                        response.put("lastName", lastName)
                         response.put("platform", "android")
                         callbackContext.success(response)
                     }
@@ -754,28 +785,16 @@ class Echo : CordovaPlugin() {
 
                 when (result) {
                     is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        val session = result.value
-                        val sessionId = session?.id ?: ""
-                        if (sessionId.isNotEmpty()) {
-                            try {
-                                Clerk.auth.setActive(sessionId = sessionId)
-                            } catch (t: Throwable) {
-                                Log.w(TAG, "setActive warning: ${t.message}")
-                            }
-                        }
-
-                        val user = try { Clerk.user } catch (t: Throwable) { null }
-                        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
-                        val effectiveUser = user ?: activeSession?.user ?: session?.user
-                        val clerkUserId = effectiveUser?.id ?: session?.userId ?: ""
+                        val (sessionId, clerkUserId, names) = extractSessionInfo(result.value)
+                        val (firstName, lastName) = names
 
                         response.put("status", "success")
                         response.put("message", "Enterprise SSO sign-up successful.")
                         response.put("isSignedIn", true)
                         response.put("userId", clerkUserId)
                         response.put("sessionId", sessionId)
-                        response.put("firstName", effectiveUser?.firstName ?: "")
-                        response.put("lastName", effectiveUser?.lastName ?: "")
+                        response.put("firstName", firstName)
+                        response.put("lastName", lastName)
                         response.put("platform", "android")
                         callbackContext.success(response)
                     }
@@ -811,27 +830,16 @@ class Echo : CordovaPlugin() {
 
                 when (result) {
                     is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        val session = result.value
-                        val sessionId = session?.id ?: ""
-                        if (sessionId.isNotEmpty()) {
-                            try {
-                                Clerk.auth.setActive(sessionId = sessionId)
-                            } catch (t: Throwable) {
-                                Log.w(TAG, "setActive warning: ${t.message}")
-                            }
-                        }
-
-                        val user = try { Clerk.user } catch (t: Throwable) { null }
-                        val activeSession = try { Clerk.session ?: Clerk.auth.sessions.firstOrNull() } catch (t: Throwable) { null }
-                        val effectiveUser = user ?: activeSession?.user ?: session?.user
+                        val (sessionId, clerkUserId, names) = extractSessionInfo(result.value)
+                        val (firstName, lastName) = names
 
                         response.put("status", "success")
                         response.put("message", "Hosted authentication successful.")
                         response.put("isSignedIn", true)
-                        response.put("userId", effectiveUser?.id ?: session?.userId ?: "")
+                        response.put("userId", clerkUserId)
                         response.put("sessionId", sessionId)
-                        response.put("firstName", effectiveUser?.firstName ?: "")
-                        response.put("lastName", effectiveUser?.lastName ?: "")
+                        response.put("firstName", firstName)
+                        response.put("lastName", lastName)
                         response.put("platform", "android")
                         callbackContext.success(response)
                     }
