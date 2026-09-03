@@ -667,6 +667,58 @@ class EchoPlugin : CDVPlugin, ASWebAuthenticationPresentationContextProviding {
             DispatchQueue.main.async {
                 if #available(iOS 12.0, *) {
                     let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
+                    let callbackScheme = "\(bundleId)"
+                    let session = ASWebAuthenticationSession(url: openUrl, callbackURLScheme: callbackScheme) { [weak self] callbackURL, error in
+                        guard let self = self else { return }
+                        if let error = error {
+                            let errCode = (error as NSError).code
+                            if errCode == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                                let errResp: [String: Any] = ["status": "error", "message": "User canceled authentication.", "errorCode": "user_canceled", "platform": "ios"]
+                                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                                return
+                            }
+                        }
+
+                        let response: [String: Any] = [
+                            "status": "success",
+                            "message": "Hosted authentication completed.",
+                            "isSignedIn": true,
+                            "url": targetUrl,
+                            "platform": "ios"
+                        ]
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                    }
+
+                    if #available(iOS 13.0, *) {
+                        session.presentationContextProvider = self
+                    }
+                    session.prefersEphemeralWebBrowserSession = false
+                    self.authSession = session
+
+                    if !session.start() {
+                        UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
+                        let response: [String: Any] = [
+                            "status": "success",
+                            "message": "Hosted Account Portal opened.",
+                            "url": targetUrl,
+                            "requiresRedirect": true,
+                            "platform": "ios"
+                        ]
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                    }
+                } else {
+                    UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
+                    let response: [String: Any] = [
+                        "status": "success",
+                        "message": "Hosted Account Portal opened.",
+                        "url": targetUrl,
+                        "requiresRedirect": true,
+                        "platform": "ios"
+                    ]
+                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                }
+            }
+        })
     }
 
     @objc(getCurrentUser:)
