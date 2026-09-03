@@ -614,31 +614,50 @@ class EchoPlugin : CDVPlugin {
         self.commandDelegate!.run(inBackground: {
             let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
             let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
-            
-            // In Clerk, the Account Portal webpage domain is the host without the 'clerk.' REST API subdomain prefix
-            var portalHost = host
-            if portalHost.hasPrefix("clerk.") {
-                portalHost = String(portalHost.dropFirst(6))
-            }
 
+            var signInUrl = ""
             var dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
-            if dbJwt.isEmpty && !pk.isEmpty {
-                // Fetch dev browser JWT to prevent browser unauthenticated errors
-                let sem = DispatchSemaphore(value: 0)
-                if let clientUrl = URL(string: "https://\(host)/v1/client?_is_native=true&_clerk_js_version=5.0.0") {
-                    var req = URLRequest(url: clientUrl)
-                    req.httpMethod = "POST"
+
+            // 1. Query Clerk /v1/environment for official sign_in_url and dev browser token
+            let sem = DispatchSemaphore(value: 0)
+            if let envUrl = URL(string: "https://\(host)/v1/environment") {
+                var req = URLRequest(url: envUrl)
+                req.httpMethod = "GET"
+                if !pk.isEmpty {
                     req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                    URLSession.shared.dataTask(with: req) { _, response, _ in
-                        self.extractAndSaveDevBrowserJwt(response: response)
-                        sem.signal()
-                    }.resume()
-                    _ = sem.wait(timeout: .now() + 5.0)
-                    dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
                 }
+                URLSession.shared.dataTask(with: req) { data, response, _ in
+                    self.extractAndSaveDevBrowserJwt(response: response)
+                    if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let displayConfig = json["display_config"] as? [String: Any],
+                       let customSignInUrl = displayConfig["sign_in_url"] as? String, !customSignInUrl.isEmpty {
+                        signInUrl = customSignInUrl
+                    }
+                    sem.signal()
+                }.resume()
+                _ = sem.wait(timeout: .now() + 5.0)
+                dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
             }
 
-            let targetUrl = !dbJwt.isEmpty ? "https://\(portalHost)/sign-in?__clerk_db_jwt=\(dbJwt)" : "https://\(portalHost)/sign-in"
+            // 2. Fallback domain derivation: remove '.clerk.' API prefix to reach the Account Portal webpage
+            if signInUrl.isEmpty {
+                var portalHost = host
+                if portalHost.contains(".clerk.accounts.dev") {
+                    portalHost = portalHost.replacingOccurrences(of: ".clerk.accounts.dev", with: ".accounts.dev")
+                } else if portalHost.hasPrefix("clerk.") {
+                    portalHost = String(portalHost.dropFirst(6))
+                }
+                signInUrl = "https://\(portalHost)/sign-in"
+            }
+
+            // 3. Attach dev browser token to prevent browser unauthenticated errors
+            let targetUrl: String
+            if !dbJwt.isEmpty {
+                let separator = signInUrl.contains("?") ? "&" : "?"
+                targetUrl = "\(signInUrl)\(separator)__clerk_db_jwt=\(dbJwt)"
+            } else {
+                targetUrl = signInUrl
+            }
 
             guard let openUrl = URL(string: targetUrl) else {
                 let errResp: [String: Any] = ["status": "error", "message": "Invalid Account Portal URL", "platform": "ios"]
