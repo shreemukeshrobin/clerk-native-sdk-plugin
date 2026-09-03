@@ -818,6 +818,7 @@ class EchoPlugin : CDVPlugin {
 
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
+        self.commandDelegate!.run(inBackground: {
             let sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
             let userId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY) ?? ""
             let firstName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY) ?? ""
