@@ -619,8 +619,8 @@ class EchoPlugin : CDVPlugin {
             let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
             let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
 
-            // Read optional redirectUrl from JS (e.g. "myapp://clerk-callback")
-            // This must match an Allowed Redirect URL registered in your Clerk Dashboard
+            // Optional redirectUrl from JS (e.g. "org.luvelo.dev.ClerkApp1://callback")
+            // Must be registered in your Clerk Dashboard → Allowlist for mobile SSO redirect
             let redirectUrl = command.arguments.count > 0 ? (command.arguments[0] as? String ?? "") : ""
 
             var signInUrl = ""
@@ -636,9 +636,11 @@ class EchoPlugin : CDVPlugin {
                 }
                 URLSession.shared.dataTask(with: req) { data, response, _ in
                     self.extractAndSaveDevBrowserJwt(response: response)
-                    if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    if let data = data,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let displayConfig = json["display_config"] as? [String: Any],
-                       let customSignInUrl = displayConfig["sign_in_url"] as? String, !customSignInUrl.isEmpty {
+                       let customSignInUrl = displayConfig["sign_in_url"] as? String,
+                       !customSignInUrl.isEmpty {
                         signInUrl = customSignInUrl
                     }
                     sem.signal()
@@ -647,7 +649,7 @@ class EchoPlugin : CDVPlugin {
                 dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
             }
 
-            // 2. Fallback domain derivation: remove '.clerk.' API prefix to reach the Account Portal webpage
+            // 2. Fallback: derive frontend URL from API host
             if signInUrl.isEmpty {
                 var portalHost = host
                 if portalHost.contains(".clerk.accounts.dev") {
@@ -658,33 +660,34 @@ class EchoPlugin : CDVPlugin {
                 signInUrl = "https://\(portalHost)/sign-in"
             }
 
-            // 3. Build final URL with redirect_url + dev browser JWT using URLComponents for proper encoding
+            // 3. Determine redirect URL and callback scheme
+            //    Bundle ID is a valid URL scheme on iOS (e.g. "org.luvelo.dev.ClerkApp1")
+            let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
+            let effectiveRedirectUrl: String
+            let callbackScheme: String
+
+            if !redirectUrl.isEmpty, let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty {
+                effectiveRedirectUrl = redirectUrl
+                callbackScheme = scheme
+            } else {
+                // Auto-derive from bundle ID to match Clerk Dashboard entry: "bundleId://callback"
+                callbackScheme = bundleId
+                effectiveRedirectUrl = "\(bundleId)://callback"
+            }
+
+            // 4. Build final URL with redirect_url + dev browser JWT
             var urlComponents = URLComponents(string: signInUrl) ?? URLComponents()
             var queryItems = urlComponents.queryItems ?? []
-
-            // Append redirect_url so Clerk can route back into the app after sign-in
-            if !redirectUrl.isEmpty {
-                queryItems.append(URLQueryItem(name: "redirect_url", value: redirectUrl))
-            }
+            queryItems.append(URLQueryItem(name: "redirect_url", value: effectiveRedirectUrl))
             if !dbJwt.isEmpty {
                 queryItems.append(URLQueryItem(name: "__clerk_db_jwt", value: dbJwt))
             }
-            urlComponents.queryItems = queryItems.isEmpty ? nil : queryItems
+            urlComponents.queryItems = queryItems
 
             guard let openUrl = urlComponents.url else {
                 let errResp: [String: Any] = ["status": "error", "message": "Invalid Account Portal URL", "platform": "ios"]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
                 return
-            }
-
-            // 4. Derive callbackURLScheme from the redirectUrl scheme (e.g. "myapp" from "myapp://clerk-callback")
-            //    Falls back to a sanitized bundle ID (dots replaced with dashes) if no redirectUrl given
-            let callbackScheme: String
-            if !redirectUrl.isEmpty, let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty {
-                callbackScheme = scheme
-            } else {
-                let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
-                callbackScheme = bundleId.replacingOccurrences(of: ".", with: "-")
             }
 
             DispatchQueue.main.async {
@@ -699,7 +702,6 @@ class EchoPlugin : CDVPlugin {
                                 return
                             }
                         }
-
                         let response: [String: Any] = [
                             "status": "success",
                             "message": "Hosted authentication completed.",
@@ -744,7 +746,6 @@ class EchoPlugin : CDVPlugin {
 
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
-        self.commandDelegate!.run(inBackground: {
             let sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
             let userId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY) ?? ""
             let firstName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY) ?? ""
