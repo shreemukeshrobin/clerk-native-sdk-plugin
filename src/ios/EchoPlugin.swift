@@ -619,6 +619,10 @@ class EchoPlugin : CDVPlugin {
             let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
             let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
 
+            // Read optional redirectUrl from JS (e.g. "myapp://clerk-callback")
+            // This must match an Allowed Redirect URL registered in your Clerk Dashboard
+            let redirectUrl = command.arguments.count > 0 ? (command.arguments[0] as? String ?? "") : ""
+
             var signInUrl = ""
             var dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
 
@@ -654,25 +658,37 @@ class EchoPlugin : CDVPlugin {
                 signInUrl = "https://\(portalHost)/sign-in"
             }
 
-            // 3. Attach dev browser token to prevent browser unauthenticated errors
-            let targetUrl: String
-            if !dbJwt.isEmpty {
-                let separator = signInUrl.contains("?") ? "&" : "?"
-                targetUrl = "\(signInUrl)\(separator)__clerk_db_jwt=\(dbJwt)"
-            } else {
-                targetUrl = signInUrl
-            }
+            // 3. Build final URL with redirect_url + dev browser JWT using URLComponents for proper encoding
+            var urlComponents = URLComponents(string: signInUrl) ?? URLComponents()
+            var queryItems = urlComponents.queryItems ?? []
 
-            guard let openUrl = URL(string: targetUrl) else {
+            // Append redirect_url so Clerk can route back into the app after sign-in
+            if !redirectUrl.isEmpty {
+                queryItems.append(URLQueryItem(name: "redirect_url", value: redirectUrl))
+            }
+            if !dbJwt.isEmpty {
+                queryItems.append(URLQueryItem(name: "__clerk_db_jwt", value: dbJwt))
+            }
+            urlComponents.queryItems = queryItems.isEmpty ? nil : queryItems
+
+            guard let openUrl = urlComponents.url else {
                 let errResp: [String: Any] = ["status": "error", "message": "Invalid Account Portal URL", "platform": "ios"]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
                 return
             }
 
+            // 4. Derive callbackURLScheme from the redirectUrl scheme (e.g. "myapp" from "myapp://clerk-callback")
+            //    Falls back to a sanitized bundle ID (dots replaced with dashes) if no redirectUrl given
+            let callbackScheme: String
+            if !redirectUrl.isEmpty, let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty {
+                callbackScheme = scheme
+            } else {
+                let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
+                callbackScheme = bundleId.replacingOccurrences(of: ".", with: "-")
+            }
+
             DispatchQueue.main.async {
                 if #available(iOS 12.0, *) {
-                    let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
-                    let callbackScheme = "\(bundleId)"
                     let session = ASWebAuthenticationSession(url: openUrl, callbackURLScheme: callbackScheme) { [weak self] callbackURL, error in
                         guard let self = self else { return }
                         if let error = error {
@@ -688,7 +704,7 @@ class EchoPlugin : CDVPlugin {
                             "status": "success",
                             "message": "Hosted authentication completed.",
                             "isSignedIn": true,
-                            "url": targetUrl,
+                            "callbackUrl": callbackURL?.absoluteString ?? "",
                             "platform": "ios"
                         ]
                         self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
@@ -705,7 +721,7 @@ class EchoPlugin : CDVPlugin {
                         let response: [String: Any] = [
                             "status": "success",
                             "message": "Hosted Account Portal opened.",
-                            "url": targetUrl,
+                            "url": openUrl.absoluteString,
                             "requiresRedirect": true,
                             "platform": "ios"
                         ]
@@ -716,7 +732,7 @@ class EchoPlugin : CDVPlugin {
                     let response: [String: Any] = [
                         "status": "success",
                         "message": "Hosted Account Portal opened.",
-                        "url": targetUrl,
+                        "url": openUrl.absoluteString,
                         "requiresRedirect": true,
                         "platform": "ios"
                     ]

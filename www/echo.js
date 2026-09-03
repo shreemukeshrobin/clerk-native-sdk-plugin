@@ -108,8 +108,16 @@ var Echo = {
         exec(successCallback, errorCallback, 'Echo', 'signUpWithEnterpriseSso', [email.trim()]);
     },
 
-    startHostedAuth: function (successCallback, errorCallback) {
-        exec(successCallback, errorCallback, 'Echo', 'startHostedAuth', []);
+    startHostedAuth: function (redirectUrl, successCallback, errorCallback) {
+        // redirectUrl is optional (e.g. "myapp://clerk-callback")
+        // It must be registered as an Allowed Redirect URL in your Clerk Dashboard
+        if (typeof redirectUrl === 'function') {
+            errorCallback = successCallback;
+            successCallback = redirectUrl;
+            redirectUrl = '';
+        }
+        var url = (typeof redirectUrl === 'string') ? redirectUrl : '';
+        exec(successCallback, errorCallback, 'Echo', 'startHostedAuth', [url]);
     },
 
     signOut: function (successCallback, errorCallback) {
