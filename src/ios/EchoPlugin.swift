@@ -850,7 +850,11 @@ class EchoPlugin : CDVPlugin {
                 callbackScheme = scheme
                 isUniversalLink = (scheme.lowercased() == "https")
             } else if universalLinkConfigured {
-                effectiveRedirectUrl = "https://\(universalLinkHost)/clerk-callback"
+                // Path is scoped per-app (by bundle ID) since sibling apps sharing this
+                // plugin also share KEYCHAIN_SERVICE / CLERK_UNIVERSAL_LINK_HOST -- a single
+                // shared path would make iOS route the Universal Link to whichever sibling
+                // app was most recently active, not necessarily the one that opened it.
+                effectiveRedirectUrl = "https://\(universalLinkHost)/clerk-callback/\(bundleId)"
                 callbackScheme = "https"
                 isUniversalLink = true
             } else {
@@ -961,7 +965,7 @@ class EchoPlugin : CDVPlugin {
             effectiveRedirectUrl = redirectUrl
             callbackScheme = scheme
         } else if universalLinkConfigured {
-            effectiveRedirectUrl = "https://\(universalLinkHost)/clerk-callback"
+            effectiveRedirectUrl = "https://\(universalLinkHost)/clerk-callback/\(bundleId)"
             callbackScheme = "https"
         } else {
             callbackScheme = bundleId
