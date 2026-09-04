@@ -670,11 +670,11 @@ class EchoPlugin : CDVPlugin {
                 effectiveRedirectUrl = redirectUrl
                 callbackScheme = scheme
             } else {
-                // "clerk" is registered as a CFBundleURLScheme for every build (plugin.xml),
-                // so this works for any bundle ID without per-app hardcoding.
-                // Matches Clerk Dashboard allowlist entry: clerk://<bundleId>.callback
-                callbackScheme = "clerk"
-                effectiveRedirectUrl = "clerk://\(bundleId).callback"
+                // Clerk's documented default for hosted auth on iOS: <bundle-identifier>://callback
+                // https://clerk.com/docs/ios/guides/account-portal/hosted-auth
+                // bundleId must also be registered as a CFBundleURLScheme (plugin.xml).
+                callbackScheme = bundleId
+                effectiveRedirectUrl = "\(bundleId)://callback"
             }
 
             // 4. Build final URL with comprehensive redirect parameters + dev browser JWT
@@ -834,15 +834,15 @@ class EchoPlugin : CDVPlugin {
             effectiveRedirectUrl = redirectUrl
             callbackScheme = scheme
         } else {
-            callbackScheme = "clerk"
-            effectiveRedirectUrl = "clerk://\(bundleId).callback"
+            callbackScheme = bundleId
+            effectiveRedirectUrl = "\(bundleId)://callback"
         }
 
         let response: [String: Any] = [
             "bundleId": bundleId,
             "callbackScheme": callbackScheme,
             "effectiveRedirectUrl": effectiveRedirectUrl,
-            "pluginVersion": "1.0.9",
+            "pluginVersion": "1.0.11",
             "platform": "ios"
         ]
         self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
