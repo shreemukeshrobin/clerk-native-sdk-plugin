@@ -680,6 +680,11 @@ class EchoPlugin : CDVPlugin {
             // 4. Build final URL with comprehensive redirect parameters + dev browser JWT
             var urlComponents = URLComponents(string: signInUrl) ?? URLComponents()
             var queryItems = urlComponents.queryItems ?? []
+            // Tells the Account Portal this is a native app context, so it validates
+            // effectiveRedirectUrl against the Native Applications allowlist instead of
+            // treating a non-https redirect target as invalid. See signInWithEnterpriseSso
+            // above, which sets the same flag on its sign_ins POST body.
+            queryItems.append(URLQueryItem(name: "_is_native", value: "true"))
             queryItems.append(URLQueryItem(name: "redirect_url", value: effectiveRedirectUrl))
             queryItems.append(URLQueryItem(name: "force_redirect_url", value: effectiveRedirectUrl))
             queryItems.append(URLQueryItem(name: "fallback_redirect_url", value: effectiveRedirectUrl))
