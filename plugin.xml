@@ -2,7 +2,7 @@
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-echo"
-        version="1.0.13">
+        version="2.0.2">
 
     <name>EchoPlugin</name>
     <description>Cordova Android Echo Plugin written in Kotlin</description>
@@ -46,16 +46,21 @@
     </platform>
 
     <!-- iOS Platform -->
-    <platform name="ios">
-        <preference name="SwiftVersion" default="5.0" />
-        <preference name="UseSwiftLanguageVersion" default="5.0" />
+    <!-- package="swift": plugin is a Swift Package (cordova-ios 8+), required for ClerkKit (SPM-only) -->
+    <platform name="ios" package="swift">
+        <!-- MABS's build generator sets SWIFT_VERSION on the main app target once it links a
+             Swift package, independent of this plugin's own SPM target settings. Must stay set
+             even in SPM mode or the build fails with "SWIFT_VERSION '' is unsupported". 6.0 is
+             required by ClerkKit's swift-tools-version 6.2. -->
+        <preference name="SwiftVersion" default="6.0" />
+        <preference name="UseSwiftLanguageVersion" default="6.0" />
 
         <config-file target="config.xml" parent="/*">
             <feature name="Echo">
                 <param name="ios-package" value="EchoPlugin" />
             </feature>
-            <preference name="SwiftVersion" value="5.0" />
-            <preference name="UseSwiftLanguageVersion" value="5.0" />
+            <preference name="SwiftVersion" value="6.0" />
+            <preference name="UseSwiftLanguageVersion" value="6.0" />
         </config-file>
 
         <!-- URL Scheme Support for Clerk OAuth & Hosted Auth Redirects -->
@@ -94,13 +99,9 @@
             </array>
         </config-file>
 
-        <!-- iOS Frameworks -->
-        <framework src="AuthenticationServices.framework" />
-        <framework src="Security.framework" />
-        <framework src="WebKit.framework" />
+        <!-- System frameworks are linked via Package.swift linkerSettings in SPM mode -->
 
-        <!-- Source & Header Files -->
-        <header-file src="src/ios/EchoPlugin-Bridging-Header.h" type="BridgingHeader" />
+        <!-- Source Files -->
         <source-file src="src/ios/EchoPlugin.swift" />
     </platform>
 

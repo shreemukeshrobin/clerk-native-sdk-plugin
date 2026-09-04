@@ -1,7 +1,9 @@
 import Foundation
+import UIKit
 import Security
 import WebKit
-import AuthenticationServices
+import ClerkKit
+import Cordova
 
 /**
  * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
@@ -21,14 +23,6 @@ class EchoPlugin : CDVPlugin {
     private static let KEYCHAIN_EMAIL_KEY = "active_clerk_email"
 
     private var inMemoryPublishableKey: String = ""
-
-    // Holds ASWebAuthenticationSession strongly to prevent premature deallocation (iOS 12+)
-    private var authSession: AnyObject?
-
-    // Polls /v1/client while the hosted auth browser is open, since the Account Portal
-    // does not reliably navigate to our custom callback scheme after sign-in completes.
-    private var hostedAuthPollTimer: Timer?
-    private var hostedAuthCompletedByPolling = false
 
     // MARK: - Explicit Keychain & Cookie Cleaning
 
@@ -235,6 +229,7 @@ class EchoPlugin : CDVPlugin {
 
             self.inMemoryPublishableKey = key
             self.saveToKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY, value: key)
+            Clerk.configure(publishableKey: key)
 
             let response: [String: Any] = [
                 "status": "success",
@@ -645,290 +640,43 @@ class EchoPlugin : CDVPlugin {
         self.signInWithEnterpriseSso(command: command)
     }
 
-    // The Account Portal does not reliably navigate to our custom callback scheme once
-    // sign-in completes (it stays on its own post-login page), so we poll /v1/client while
-    // the ASWebAuthenticationSession is open and close it ourselves once a session appears.
-    @available(iOS 12.0, *)
-    private func startHostedAuthPolling(host: String, isDev: Bool, pk: String, session: ASWebAuthenticationSession) {
-        self.hostedAuthPollTimer?.invalidate()
-        self.hostedAuthCompletedByPolling = false
-
-        var attemptsRemaining = 120 // ~1.5s interval => ~3 minutes total
-        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
-            guard let self = self else { timer.invalidate(); return }
-            attemptsRemaining -= 1
-            if attemptsRemaining <= 0 {
-                timer.invalidate()
-                self.hostedAuthPollTimer = nil
-                return
-            }
-
-            self.commandDelegate!.run(inBackground: {
-                guard let clientUrl = URL(string: "https://\(host)/v1/client") else { return }
-                var req = URLRequest(url: clientUrl)
-                req.httpMethod = "GET"
-                if !pk.isEmpty {
-                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                }
-                let dbToken = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
-                if !dbToken.isEmpty {
-                    req.setValue(dbToken, forHTTPHeaderField: "Clerk-Db-Jwt")
-                }
-
-                URLSession.shared.dataTask(with: req) { data, resp, _ in
-                    self.extractAndSaveDevBrowserJwt(response: resp)
-                    guard let data = data,
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let clientObj = json["client"] as? [String: Any],
-                          let sessionsList = clientObj["sessions"] as? [[String: Any]],
-                          !sessionsList.isEmpty else { return }
-
-                    DispatchQueue.main.async {
-                        guard self.hostedAuthPollTimer != nil else { return }
-                        self.stopHostedAuthPolling()
-                        self.hostedAuthCompletedByPolling = true
-                        session.cancel()
-                    }
-                }.resume()
-            })
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.hostedAuthPollTimer = timer
-    }
-
-    private func stopHostedAuthPolling() {
-        self.hostedAuthPollTimer?.invalidate()
-        self.hostedAuthPollTimer = nil
-    }
-
+    // Delegates entirely to ClerkKit's own native SSO handshake, which is the only
+    // sanctioned way for the Account Portal to hand a completed session back to the app.
+    // A hand-rolled ASWebAuthenticationSession pointed at the portal's /sign-in page
+    // cannot do this: Clerk's backend rejects the redirect handoff unless it originates
+    // from the real SDK, regardless of redirect_url / _is_native query params (confirmed
+    // previously via the "Clerk cannot redirect to your application" error).
     @objc(startHostedAuth:)
     func startHostedAuth(command: CDVInvokedUrlCommand) {
-        self.commandDelegate!.run(inBackground: {
-            let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
-            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+        Task {
+            do {
+                try await Clerk.shared.auth.startHostedAuth()
+
+                var response: [String: Any] = [
+                    "status": "success",
+                    "message": "Hosted authentication completed successfully.",
+                    "isSignedIn": true,
+                    "platform": "ios"
+                ]
+                if let userId = Clerk.shared.user?.id {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: userId)
+                    response["userId"] = userId
+                }
+                if let sessionId = Clerk.shared.session?.id {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: sessionId)
+                    response["sessionId"] = sessionId
+                }
+
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+            } catch {
                 let errResp: [String: Any] = [
                     "status": "error",
-                    "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
-                    "errorCode": "clerk_not_initialized",
+                    "message": error.localizedDescription,
                     "platform": "ios"
                 ]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
-                return
             }
-
-            // Optional redirectUrl from JS (e.g. "org.luvelo.dev.ClerkApp1://callback")
-            // Must be registered in your Clerk Dashboard → Allowlist for mobile SSO redirect
-            let redirectUrl = command.arguments.count > 0 ? (command.arguments[0] as? String ?? "") : ""
-
-            let isDev = self.isDevelopmentKey(publishableKey: pk)
-            var signInUrl = ""
-            var dbJwt = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
-
-            // 1. Query Clerk /v1/environment for official sign_in_url and dev browser token
-            let sem = DispatchSemaphore(value: 0)
-            if let envUrl = URL(string: "https://\(host)/v1/environment") {
-                var req = URLRequest(url: envUrl)
-                req.httpMethod = "GET"
-                if !pk.isEmpty {
-                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                }
-                URLSession.shared.dataTask(with: req) { data, response, _ in
-                    self.extractAndSaveDevBrowserJwt(response: response)
-                    if let data = data,
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let displayConfig = json["display_config"] as? [String: Any],
-                       let customSignInUrl = displayConfig["sign_in_url"] as? String,
-                       !customSignInUrl.isEmpty {
-                        signInUrl = customSignInUrl
-                    }
-                    sem.signal()
-                }.resume()
-                _ = sem.wait(timeout: .now() + 5.0)
-                dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
-            }
-
-            // 2. Fallback: derive frontend URL from API host
-            if signInUrl.isEmpty {
-                var portalHost = host
-                if portalHost.contains(".clerk.accounts.dev") {
-                    portalHost = portalHost.replacingOccurrences(of: ".clerk.accounts.dev", with: ".accounts.dev")
-                } else if portalHost.hasPrefix("clerk.") {
-                    portalHost = String(portalHost.dropFirst(6))
-                }
-                signInUrl = "https://\(portalHost)/sign-in"
-            }
-
-            // 3. Determine redirect URL and callback scheme
-            //    Bundle ID is a valid URL scheme on iOS (e.g. "org.luvelo.dev.ClerkApp1")
-            let bundleId = Bundle.main.bundleIdentifier ?? "clerk"
-            let effectiveRedirectUrl: String
-            let callbackScheme: String
-
-            if !redirectUrl.isEmpty, let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty {
-                effectiveRedirectUrl = redirectUrl
-                callbackScheme = scheme
-            } else {
-                // Clerk's documented default for hosted auth on iOS: <bundle-identifier>://callback
-                // https://clerk.com/docs/ios/guides/account-portal/hosted-auth
-                // bundleId must also be registered as a CFBundleURLScheme (plugin.xml).
-                callbackScheme = bundleId
-                effectiveRedirectUrl = "\(bundleId)://callback"
-            }
-
-            // 4. Build final URL with comprehensive redirect parameters + dev browser JWT
-            var urlComponents = URLComponents(string: signInUrl) ?? URLComponents()
-            var queryItems = urlComponents.queryItems ?? []
-            // Tells the Account Portal this is a native app context, so it validates
-            // effectiveRedirectUrl against the Native Applications allowlist instead of
-            // treating a non-https redirect target as invalid. See signInWithEnterpriseSso
-            // above, which sets the same flag on its sign_ins POST body.
-            queryItems.append(URLQueryItem(name: "_is_native", value: "true"))
-            queryItems.append(URLQueryItem(name: "redirect_url", value: effectiveRedirectUrl))
-            queryItems.append(URLQueryItem(name: "force_redirect_url", value: effectiveRedirectUrl))
-            queryItems.append(URLQueryItem(name: "fallback_redirect_url", value: effectiveRedirectUrl))
-            queryItems.append(URLQueryItem(name: "after_sign_in_url", value: effectiveRedirectUrl))
-            queryItems.append(URLQueryItem(name: "after_sign_up_url", value: effectiveRedirectUrl))
-            if !dbJwt.isEmpty {
-                queryItems.append(URLQueryItem(name: "__clerk_db_jwt", value: dbJwt))
-            }
-            urlComponents.queryItems = queryItems
-
-            guard let openUrl = urlComponents.url else {
-                let errResp: [String: Any] = ["status": "error", "message": "Invalid Account Portal URL", "platform": "ios"]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
-                return
-            }
-
-            DispatchQueue.main.async {
-                if #available(iOS 12.0, *) {
-                    let session = ASWebAuthenticationSession(url: openUrl, callbackURLScheme: callbackScheme) { [weak self] callbackURL, error in
-                        guard let self = self else { return }
-                        self.stopHostedAuthPolling()
-
-                        if let error = error {
-                            let errCode = (error as NSError).code
-                            if errCode == ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                                if self.hostedAuthCompletedByPolling {
-                                    // We closed the session ourselves after detecting an active
-                                    // session via polling; fall through to the success path below.
-                                    self.hostedAuthCompletedByPolling = false
-                                } else {
-                                    let errResp: [String: Any] = ["status": "error", "message": "User canceled authentication.", "errorCode": "user_canceled", "platform": "ios"]
-                                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
-                                    return
-                                }
-                            }
-                        }
-
-                        // Query Clerk /v1/client in background to synchronize session into shared Keychain
-                        self.commandDelegate!.run(inBackground: {
-                            var userId = ""
-                            var firstName = ""
-                            var lastName = ""
-                            var sessionId = ""
-
-                            if let clientUrl = URL(string: "https://\(host)/v1/client") {
-                                var req = URLRequest(url: clientUrl)
-                                req.httpMethod = "GET"
-                                if !pk.isEmpty {
-                                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                                }
-                                let dbToken = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
-                                if !dbToken.isEmpty {
-                                    req.setValue(dbToken, forHTTPHeaderField: "Clerk-Db-Jwt")
-                                }
-
-                                let sem = DispatchSemaphore(value: 0)
-                                URLSession.shared.dataTask(with: req) { data, resp, _ in
-                                    self.extractAndSaveDevBrowserJwt(response: resp)
-                                    if let data = data,
-                                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                                       let clientObj = json["client"] as? [String: Any],
-                                       let sessionsList = clientObj["sessions"] as? [[String: Any]],
-                                       let activeSession = sessionsList.first {
-
-                                        sessionId = activeSession["id"] as? String ?? ""
-                                        if let lastActiveToken = activeSession["last_active_token"] as? [String: Any],
-                                           let jwt = lastActiveToken["jwt"] as? String {
-                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwt)
-                                        }
-                                        if let userObj = activeSession["user"] as? [String: Any] {
-                                            userId = userObj["id"] as? String ?? ""
-                                            firstName = userObj["first_name"] as? String ?? ""
-                                            lastName = userObj["last_name"] as? String ?? ""
-                                            if let emailList = userObj["email_addresses"] as? [[String: Any]],
-                                               let firstEmail = emailList.first,
-                                               let email = firstEmail["email_address"] as? String {
-                                                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY, value: email)
-                                            }
-                                        }
-
-                                        if !sessionId.isEmpty {
-                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: sessionId)
-                                        }
-                                        if !userId.isEmpty {
-                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: userId)
-                                        }
-                                        if !firstName.isEmpty {
-                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY, value: firstName)
-                                        }
-                                        if !lastName.isEmpty {
-                                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY, value: lastName)
-                                        }
-                                    }
-                                    sem.signal()
-                                }.resume()
-                                _ = sem.wait(timeout: .now() + 5.0)
-                            }
-
-                            var response: [String: Any] = [
-                                "status": "success",
-                                "message": "Hosted authentication completed successfully.",
-                                "isSignedIn": true,
-                                "callbackUrl": callbackURL?.absoluteString ?? "",
-                                "platform": "ios"
-                            ]
-                            if !userId.isEmpty { response["userId"] = userId }
-                            if !firstName.isEmpty { response["firstName"] = firstName }
-                            if !lastName.isEmpty { response["lastName"] = lastName }
-                            if !sessionId.isEmpty { response["sessionId"] = sessionId }
-
-                            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-                        })
-                    }
-
-                    if #available(iOS 13.0, *) {
-                        session.presentationContextProvider = self
-                    }
-                    session.prefersEphemeralWebBrowserSession = false
-                    self.authSession = session
-
-                    if session.start() {
-                        self.startHostedAuthPolling(host: host, isDev: isDev, pk: pk, session: session)
-                    } else {
-                        UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
-                        let response: [String: Any] = [
-                            "status": "success",
-                            "message": "Hosted Account Portal opened.",
-                            "url": openUrl.absoluteString,
-                            "requiresRedirect": true,
-                            "platform": "ios"
-                        ]
-                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-                    }
-                } else {
-                    UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
-                    let response: [String: Any] = [
-                        "status": "success",
-                        "message": "Hosted Account Portal opened.",
-                        "url": openUrl.absoluteString,
-                        "requiresRedirect": true,
-                        "platform": "ios"
-                    ]
-                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-                }
-            }
-        })
+        }
     }
 
     @objc(getHostedAuthDebugInfo:)
@@ -950,7 +698,7 @@ class EchoPlugin : CDVPlugin {
             "bundleId": bundleId,
             "callbackScheme": callbackScheme,
             "effectiveRedirectUrl": effectiveRedirectUrl,
-            "pluginVersion": "1.0.13",
+            "pluginVersion": "2.0.2",
             "platform": "ios"
         ]
         self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
@@ -1166,12 +914,5 @@ class EchoPlugin : CDVPlugin {
             ]
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
         })
-    }
-}
-
-@available(iOS 13.0, *)
-extension EchoPlugin: ASWebAuthenticationPresentationContextProviding {
-    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        return self.viewController.view.window ?? ASPresentationAnchor()
     }
 }
