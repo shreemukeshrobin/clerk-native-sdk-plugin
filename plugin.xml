@@ -2,7 +2,7 @@
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-echo"
-        version="2.0.0">
+        version="2.0.1">
 
     <name>EchoPlugin</name>
     <description>Cordova Android Echo Plugin written in Kotlin</description>
@@ -48,10 +48,15 @@
     <!-- iOS Platform -->
     <!-- package="swift": plugin is a Swift Package (cordova-ios 8+), required for ClerkKit (SPM-only) -->
     <platform name="ios" package="swift">
+        <preference name="SwiftVersion" default="6.0" />
+        <preference name="UseSwiftLanguageVersion" default="6.0" />
+
         <config-file target="config.xml" parent="/*">
             <feature name="Echo">
                 <param name="ios-package" value="EchoPlugin" />
             </feature>
+            <preference name="SwiftVersion" value="6.0" />
+            <preference name="UseSwiftLanguageVersion" value="6.0" />
         </config-file>
 
         <!-- URL Scheme Support for Clerk OAuth & Hosted Auth Redirects -->
