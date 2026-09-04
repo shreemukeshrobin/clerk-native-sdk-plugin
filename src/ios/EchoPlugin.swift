@@ -138,6 +138,10 @@ class EchoPlugin : CDVPlugin {
         return nil
     }
 
+    private func isDevelopmentKey(publishableKey: String) -> Bool {
+        return publishableKey.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("pk_test_")
+    }
+
     // MARK: - Plugin Actions
 
     @objc(echo:)
@@ -249,7 +253,8 @@ class EchoPlugin : CDVPlugin {
             URLQueryItem(name: "_clerk_js_version", value: "5.0.0"),
             URLQueryItem(name: "_is_native", value: "true")
         ]
-        if !isRetry, let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+        let isDev = self.isDevelopmentKey(publishableKey: pk)
+        if isDev && !isRetry, let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
             queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
         }
         urlComponents.queryItems = queryItems
@@ -265,7 +270,7 @@ class EchoPlugin : CDVPlugin {
         if !pk.isEmpty {
             request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
         }
-        if !isRetry, let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+        if isDev && !isRetry, let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
             request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
         }
 
@@ -439,16 +444,27 @@ class EchoPlugin : CDVPlugin {
         self.commandDelegate!.run(inBackground: {
             let pkArg = command.arguments.first as? String ?? ""
             let pk = !pkArg.isEmpty ? pkArg : (self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey)
-            let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
-            let callbackUrl = "https://\(host)/v1/client/sign_ins/callback"
+            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+                let errResp: [String: Any] = [
+                    "status": "error",
+                    "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
+                    "errorCode": "clerk_not_initialized",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            let isDev = self.isDevelopmentKey(publishableKey: pk)
+            let dbJwt = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
+            let callbackUrl = (!dbJwt.isEmpty) ? "https://\(host)/v1/client/sign_ins/callback?__clerk_db_jwt=\(dbJwt)" : "https://\(host)/v1/client/sign_ins/callback"
 
             var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins")
             var queryItems = [
                 URLQueryItem(name: "_is_native", value: "true"),
                 URLQueryItem(name: "_clerk_js_version", value: "5.0.0")
             ]
-            let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
-            if !dbJwt.isEmpty {
+            if isDev && !dbJwt.isEmpty {
                 queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
             }
             urlComponents?.queryItems = queryItems
@@ -465,7 +481,7 @@ class EchoPlugin : CDVPlugin {
             if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
             }
-            if !dbJwt.isEmpty {
+            if isDev && !dbJwt.isEmpty {
                 request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
             let encodedCallback = callbackUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? callbackUrl
@@ -525,16 +541,27 @@ class EchoPlugin : CDVPlugin {
         self.commandDelegate!.run(inBackground: {
             let email = command.arguments.first as? String ?? ""
             let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
-            let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
-            let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
-            let callbackUrl = !dbJwt.isEmpty ? "https://\(host)/v1/client/sign_ins/callback?__clerk_db_jwt=\(dbJwt)" : "https://\(host)/v1/client/sign_ins/callback"
+            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+                let errResp: [String: Any] = [
+                    "status": "error",
+                    "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
+                    "errorCode": "clerk_not_initialized",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
+
+            let isDev = self.isDevelopmentKey(publishableKey: pk)
+            let dbJwt = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
+            let callbackUrl = (!dbJwt.isEmpty) ? "https://\(host)/v1/client/sign_ins/callback?__clerk_db_jwt=\(dbJwt)" : "https://\(host)/v1/client/sign_ins/callback"
 
             var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins")
             var queryItems = [
                 URLQueryItem(name: "_is_native", value: "true"),
                 URLQueryItem(name: "_clerk_js_version", value: "5.0.0")
             ]
-            if !dbJwt.isEmpty {
+            if isDev && !dbJwt.isEmpty {
                 queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
             }
             urlComponents?.queryItems = queryItems
@@ -551,7 +578,7 @@ class EchoPlugin : CDVPlugin {
             if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
             }
-            if !dbJwt.isEmpty {
+            if isDev && !dbJwt.isEmpty {
                 request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
 
@@ -617,14 +644,24 @@ class EchoPlugin : CDVPlugin {
     func startHostedAuth(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
             let pk = !self.inMemoryPublishableKey.isEmpty ? self.inMemoryPublishableKey : (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "")
-            let host = self.getFrontendApiHost(publishableKey: pk) ?? "clerk.accounts.dev"
+            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+                let errResp: [String: Any] = [
+                    "status": "error",
+                    "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
+                    "errorCode": "clerk_not_initialized",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                return
+            }
 
             // Optional redirectUrl from JS (e.g. "org.luvelo.dev.ClerkApp1://callback")
             // Must be registered in your Clerk Dashboard → Allowlist for mobile SSO redirect
             let redirectUrl = command.arguments.count > 0 ? (command.arguments[0] as? String ?? "") : ""
 
+            let isDev = self.isDevelopmentKey(publishableKey: pk)
             var signInUrl = ""
-            var dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+            var dbJwt = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
 
             // 1. Query Clerk /v1/environment for official sign_in_url and dev browser token
             let sem = DispatchSemaphore(value: 0)
@@ -727,7 +764,7 @@ class EchoPlugin : CDVPlugin {
                                 if !pk.isEmpty {
                                     req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
                                 }
-                                let dbToken = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? ""
+                                let dbToken = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
                                 if !dbToken.isEmpty {
                                     req.setValue(dbToken, forHTTPHeaderField: "Clerk-Db-Jwt")
                                 }
@@ -885,7 +922,9 @@ class EchoPlugin : CDVPlugin {
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
             if let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty, var urlComponents = URLComponents(string: "https://\(host)/v1/client") {
                 var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
-                if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                let isDev = self.isDevelopmentKey(publishableKey: pk)
+                let dbJwt = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
+                if !dbJwt.isEmpty {
                     queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
                 }
                 urlComponents.queryItems = queryItems
@@ -894,7 +933,7 @@ class EchoPlugin : CDVPlugin {
                     var request = URLRequest(url: url)
                     request.httpMethod = "GET"
                     request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                    if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                    if !dbJwt.isEmpty {
                         request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
                     }
 
