@@ -25,6 +25,11 @@ class EchoPlugin : CDVPlugin {
     // Holds ASWebAuthenticationSession strongly to prevent premature deallocation (iOS 12+)
     private var authSession: AnyObject?
 
+    // Polls /v1/client while the hosted auth browser is open, since the Account Portal
+    // does not reliably navigate to our custom callback scheme after sign-in completes.
+    private var hostedAuthPollTimer: Timer?
+    private var hostedAuthCompletedByPolling = false
+
     // MARK: - Explicit Keychain & Cookie Cleaning
 
     private func purgeAllClerkCookies() {
@@ -640,6 +645,62 @@ class EchoPlugin : CDVPlugin {
         self.signInWithEnterpriseSso(command: command)
     }
 
+    // The Account Portal does not reliably navigate to our custom callback scheme once
+    // sign-in completes (it stays on its own post-login page), so we poll /v1/client while
+    // the ASWebAuthenticationSession is open and close it ourselves once a session appears.
+    @available(iOS 12.0, *)
+    private func startHostedAuthPolling(host: String, isDev: Bool, pk: String, session: ASWebAuthenticationSession) {
+        self.hostedAuthPollTimer?.invalidate()
+        self.hostedAuthCompletedByPolling = false
+
+        var attemptsRemaining = 120 // ~1.5s interval => ~3 minutes total
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            attemptsRemaining -= 1
+            if attemptsRemaining <= 0 {
+                timer.invalidate()
+                self.hostedAuthPollTimer = nil
+                return
+            }
+
+            self.commandDelegate!.run(inBackground: {
+                guard let clientUrl = URL(string: "https://\(host)/v1/client") else { return }
+                var req = URLRequest(url: clientUrl)
+                req.httpMethod = "GET"
+                if !pk.isEmpty {
+                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+                }
+                let dbToken = isDev ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY) ?? "") : ""
+                if !dbToken.isEmpty {
+                    req.setValue(dbToken, forHTTPHeaderField: "Clerk-Db-Jwt")
+                }
+
+                URLSession.shared.dataTask(with: req) { data, resp, _ in
+                    self.extractAndSaveDevBrowserJwt(response: resp)
+                    guard let data = data,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let clientObj = json["client"] as? [String: Any],
+                          let sessionsList = clientObj["sessions"] as? [[String: Any]],
+                          !sessionsList.isEmpty else { return }
+
+                    DispatchQueue.main.async {
+                        guard self.hostedAuthPollTimer != nil else { return }
+                        self.stopHostedAuthPolling()
+                        self.hostedAuthCompletedByPolling = true
+                        session.cancel()
+                    }
+                }.resume()
+            })
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.hostedAuthPollTimer = timer
+    }
+
+    private func stopHostedAuthPolling() {
+        self.hostedAuthPollTimer?.invalidate()
+        self.hostedAuthPollTimer = nil
+    }
+
     @objc(startHostedAuth:)
     func startHostedAuth(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
@@ -742,12 +803,20 @@ class EchoPlugin : CDVPlugin {
                 if #available(iOS 12.0, *) {
                     let session = ASWebAuthenticationSession(url: openUrl, callbackURLScheme: callbackScheme) { [weak self] callbackURL, error in
                         guard let self = self else { return }
+                        self.stopHostedAuthPolling()
+
                         if let error = error {
                             let errCode = (error as NSError).code
                             if errCode == ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                                let errResp: [String: Any] = ["status": "error", "message": "User canceled authentication.", "errorCode": "user_canceled", "platform": "ios"]
-                                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
-                                return
+                                if self.hostedAuthCompletedByPolling {
+                                    // We closed the session ourselves after detecting an active
+                                    // session via polling; fall through to the success path below.
+                                    self.hostedAuthCompletedByPolling = false
+                                } else {
+                                    let errResp: [String: Any] = ["status": "error", "message": "User canceled authentication.", "errorCode": "user_canceled", "platform": "ios"]
+                                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: errResp), callbackId: command.callbackId)
+                                    return
+                                }
                             }
                         }
 
@@ -834,7 +903,9 @@ class EchoPlugin : CDVPlugin {
                     session.prefersEphemeralWebBrowserSession = false
                     self.authSession = session
 
-                    if !session.start() {
+                    if session.start() {
+                        self.startHostedAuthPolling(host: host, isDev: isDev, pk: pk, session: session)
+                    } else {
                         UIApplication.shared.open(openUrl, options: [:], completionHandler: nil)
                         let response: [String: Any] = [
                             "status": "success",
@@ -879,7 +950,7 @@ class EchoPlugin : CDVPlugin {
             "bundleId": bundleId,
             "callbackScheme": callbackScheme,
             "effectiveRedirectUrl": effectiveRedirectUrl,
-            "pluginVersion": "1.0.11",
+            "pluginVersion": "1.0.13",
             "platform": "ios"
         ]
         self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
