@@ -2,6 +2,7 @@ import Foundation
 import Security
 import WebKit
 import ClerkKit
+import Cordova
 
 /**
  * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
