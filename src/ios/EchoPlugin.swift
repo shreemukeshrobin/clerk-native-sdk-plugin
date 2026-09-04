@@ -650,21 +650,19 @@ class EchoPlugin : CDVPlugin {
     func startHostedAuth(command: CDVInvokedUrlCommand) {
         Task {
             do {
-                try await Clerk.shared.auth.startHostedAuth()
+                let session = try await Clerk.shared.auth.startHostedAuth()
+                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: session.id)
 
                 var response: [String: Any] = [
                     "status": "success",
                     "message": "Hosted authentication completed successfully.",
                     "isSignedIn": true,
+                    "sessionId": session.id,
                     "platform": "ios"
                 ]
                 if let userId = Clerk.shared.user?.id {
                     self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: userId)
                     response["userId"] = userId
-                }
-                if let sessionId = Clerk.shared.session?.id {
-                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: sessionId)
-                    response["sessionId"] = sessionId
                 }
 
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
